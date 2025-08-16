@@ -61,3 +61,16 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+# Normalize endings for code and scripts used in this repo
+*.py    text eol=lf
+*.spec  text eol=lf     # PyInstaller spec files are Python
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+
+# Explicit binaries (harmlessly redundant but self-documenting)
+*.ico   binary
