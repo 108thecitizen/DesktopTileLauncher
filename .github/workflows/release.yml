@@ -1,50 +1,86 @@
 name: release-on-tag
+
 on:
   push:
-    tags: [ "v*" ]
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to build & release (e.g., v0.1.0)"
+        description: 'Tag to release (e.g. v0.1.1)'
         required: true
 
-permissions:
-  contents: write   # allow creating GitHub Releases
-
 jobs:
-  build-release:
+  build-and-release:
     runs-on: windows-latest
+    permissions:
+      contents: write  # needed to create releases & upload assets
     steps:
-      # Checkout the exact tag when run manually; otherwise use the pushed tag
-      - name: Checkout (manual run)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      # Decide which tag to build
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "value=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          fi
+
+      # Build the exact tag, not HEAD
+      - name: Checkout ${{ steps.tag.outputs.value }}
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ steps.tag.outputs.value }}
+          fetch-depth: 0
 
-      - name: Checkout (on tag push)
-        if: ${{ github.event_name == 'push' }}
-        uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install build deps
+      - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if (Test-Path .\requirements.txt) {
+            pip install -r .\requirements.txt
+          } else {
+            pip install pyinstaller
+          }
 
       - name: Build with PyInstaller
         shell: pwsh
-        run: pyinstaller .\DesktopTileLauncher.spec
+        run: |
+          if (Test-Path .\DesktopTileLauncher.spec) {
+            pyinstaller .\DesktopTileLauncher.spec
+          } else {
+            pyinstaller --onefile .\DesktopTileLauncher.py --name DesktopTileLauncher
+          }
 
-      - name: Create GitHub Release and upload EXE
+      - name: List dist (debug)
+        shell: pwsh
+        run: |
+          if (Test-Path .\dist) {
+            Get-ChildItem -Recurse -File .\dist | Format-Table FullName, Length
+          } else {
+            Write-Error "dist/ not found"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopTileLauncher-${{ steps.tag.outputs.value }}
+          path: |
+            dist/**/*.exe
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # when manual, use the input; on tag push, github.ref_name is the tag
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          tag_name: ${{ steps.tag.outputs.value }}
+          name: ${{ steps.tag.outputs.value }}
           generate_release_notes: true
-          files: dist/**/DesktopTileLauncher.exe
+          files: |
+            dist/**/*.exe
+          fail_on_unmatched_files: true
