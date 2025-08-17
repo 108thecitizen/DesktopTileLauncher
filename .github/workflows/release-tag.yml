@@ -48,7 +48,6 @@ jobs:
             pip install pyinstaller
           }
 
-      # Generate version_info.txt from the tag using bash (avoids PowerShell quoting issues)
       - name: Generate Windows version file from tag
         shell: pwsh
         run: |
@@ -57,7 +56,6 @@ jobs:
           $parts = $ver.Split('.')
           while ($parts.Count -lt 4) { $parts += '0' }
           $tuple = ($parts | ForEach-Object { [int]$_ }) -join ','
-
           $lines = @(
             'VSVersionInfo('
             '  ffi=FixedFileInfo('
@@ -78,11 +76,11 @@ jobs:
       - name: Build with PyInstaller
         shell: pwsh
         run: |
-	 if (Test-Path .\DesktopTileLauncher.spec) {
-	   pyinstaller .\DesktopTileLauncher.spec
-	 } else {
-	   pyinstaller --onefile .\DesktopTileLauncher.py --name DesktopTileLauncher --version-file version_info.txt
-	 }
+          if (Test-Path .\DesktopTileLauncher.spec) {
+            pyinstaller .\DesktopTileLauncher.spec
+          } else {
+            pyinstaller --onefile .\DesktopTileLauncher.py --name DesktopTileLauncher --version-file version_info.txt
+          }
 
       - name: List dist (debug)
         shell: pwsh
@@ -118,5 +116,3 @@ jobs:
           files: |
             dist/**/DesktopTileLauncher-*.exe
           fail_on_unmatched_files: true
-
-
