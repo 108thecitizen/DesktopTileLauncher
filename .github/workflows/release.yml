@@ -78,11 +78,11 @@ EOF
       - name: Build with PyInstaller
         shell: pwsh
         run: |
-          if (Test-Path .\DesktopTileLauncher.spec) {
-            pyinstaller .\DesktopTileLauncher.spec --version-file version_info.txt
-          } else {
-            pyinstaller --onefile .\DesktopTileLauncher.py --name DesktopTileLauncher --version-file version_info.txt
-          }
+	 if (Test-Path .\DesktopTileLauncher.spec) {
+	   pyinstaller .\DesktopTileLauncher.spec
+	 } else {
+	   pyinstaller --onefile .\DesktopTileLauncher.py --name DesktopTileLauncher --version-file version_info.txt
+	 }
 
       - name: List dist (debug)
         shell: pwsh
