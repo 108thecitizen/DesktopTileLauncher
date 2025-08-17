@@ -1,0 +1,25 @@
+# .github/workflows/release.yml
+name: release-on-tag
+on:
+  push:
+    tags: [ 'v*' ]
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
+      - name: Install build deps
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build
+        shell: pwsh
+        run: pyinstaller .\DesktopTileLauncher.spec
+      - name: Create GitHub Release and upload EXE
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/DesktopTileLauncher.exe

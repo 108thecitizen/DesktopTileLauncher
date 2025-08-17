@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
       - name: Install build deps
         shell: pwsh
         run: |
@@ -32,5 +33,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DesktopTileLauncher
-          path: dist/**
+            name: DesktopTileLauncher-${{ github.ref_name }}-${{ github.run_number }}
+            path: dist/**/DesktopTileLauncher.exe
