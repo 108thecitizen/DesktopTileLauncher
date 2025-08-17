@@ -26,6 +26,7 @@ exe = EXE(
     [],
     name='DesktopTileLauncher',
     icon='DesktopTileLauncher.ico',
+    version='version_info.txt', 
     console=False,                 # no console window
     version='version_info.txt',    # stamped File Properties
     upx=True,                      # harmless if UPX isn't installed
