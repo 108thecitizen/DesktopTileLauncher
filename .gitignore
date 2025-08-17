@@ -373,3 +373,9 @@ FodyWeavers.xsd
 /.env
 
 /.env.local
+
+# local release downloads
+/DesktopTileLauncher*.exe
+
+# local workflow backups
+.github/workflows/*.bk
