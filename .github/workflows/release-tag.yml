@@ -99,6 +99,21 @@ jobs:
           $dst = Join-Path $dir ("DesktopTileLauncher-" + $tag + ".exe")
           Move-Item -Force $exe $dst
 
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -File dist -Filter "DesktopTileLauncher-*.exe" | Select-Object -First 1
+          $hash = Get-FileHash $exe.FullName -Algorithm SHA256
+          "$($hash.Hash)  $($exe.Name)" | Out-File -Encoding ascii -FilePath dist\SHA256SUMS.txt
+
+      - name: Update release with checksums
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.value }}
+          files: |
+            dist/**/DesktopTileLauncher-*.exe
+            dist/**/SHA256SUMS.txt
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -113,6 +128,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/**/DesktopTileLauncher-*.exe
+            LICENSE.md
           fail_on_unmatched_files: true
 
 
