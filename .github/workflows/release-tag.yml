@@ -56,22 +56,28 @@ jobs:
           $parts = $ver.Split('.')
           while ($parts.Count -lt 4) { $parts += '0' }
           $tuple = ($parts | ForEach-Object { [int]$_ }) -join ','
-          $lines = @(
-            'VSVersionInfo('
-            '  ffi=FixedFileInfo('
-            "    filevers=($tuple),"
-            "    prodvers=($tuple),"
-            '    mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subType=0x0, date=(0, 0)'
-            '  ),'
-            '  kids=[StringFileInfo([StringTable(''040904B0'', ['
-            "    StringStruct(''FileDescription'', ''DesktopTileLauncher''),"
-            "    StringStruct(''FileVersion'', ''$ver''),"
-            "    StringStruct(''ProductName'', ''DesktopTileLauncher''),"
-            "    StringStruct(''ProductVersion'', ''$ver'')"
-            '  ])]), VarFileInfo([VarStruct(''Translation'', [1033, 1200])])]'
-            ')'
-          )
-          $lines | Set-Content -Encoding ascii version_info.txt
+          $txt = @"
+            VSVersionInfo(
+              ffi=FixedFileInfo(
+                filevers=($tuple),
+                prodvers=($tuple),
+                mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subType=0x0, date=(0, 0)
+              ),
+              kids=[StringFileInfo([StringTable(''040904B0'', [
+                StringStruct(''FileDescription'', ''DesktopTileLauncher''),
+                StringStruct(''FileVersion'', ''$ver''),
+                StringStruct(''ProductName'', ''DesktopTileLauncher''),
+                StringStruct(''ProductVersion'', ''$ver'')
+              ])]), VarFileInfo([VarStruct(''Translation'', [1033, 1200])])]
+            )
+            "@
+
+          Set-Content -Path version_info.txt -Value $txt -Encoding ascii
+
+      - name: Show version_info.txt (debug)
+        if: always()
+        shell: pwsh
+        run: Get-Content .\version_info.txt | ForEach-Object { '>> ' + $_ }
 
       - name: Build with PyInstaller
         shell: pwsh
