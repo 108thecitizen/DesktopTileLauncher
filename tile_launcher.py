@@ -1,4 +1,4 @@
-﻿# tile_launcher.py
+# tile_launcher.py
 # Minimal desktop launcher: lockable tile grid that opens URLs in the default browser.
 # Windows/Mac/Linux.  Requires: Python 3.10+  pip install PySide6
 # encoding changed
@@ -64,7 +64,7 @@ class Tile:
 class LauncherConfig:
     title: str = "Launcher"
     columns: int = 5
-    tiles: list['Tile'] = field(default_factory=list)
+    tiles: list["Tile"] = field(default_factory=list)
 
     @staticmethod
     def load():
