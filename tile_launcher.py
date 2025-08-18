@@ -13,7 +13,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
-from typing import List, Optional
+from typing import Optional
 
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
