@@ -1,4 +1,5 @@
 ﻿name: build-windows-exe
+
 on:
   push:
     branches: [ master ]   # you're on master today
@@ -9,10 +10,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
+
       - name: Install build deps
         shell: pwsh
         run: |
@@ -22,20 +25,8 @@ jobs:
           } else {
             pip install pyinstaller
           }
-      - name: Build with PyInstaller
-        shell: pwsh
-        run: |
-          if (Test-Path -Path .\DesktopTileLauncher.spec) {
-            pyinstaller .\DesktopTileLauncher.spec
-          } else {
-            pyinstaller --onefile .\tile_launcher.py --icon DesktopTileLauncher.ico --version-file version_info.txt
-          }
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-            name: DesktopTileLauncher-${{ github.ref_name }}-${{ github.run_number }}
-            path: dist/**/DesktopTileLauncher.exe
-            - name: Generate version_info.txt
+
+      - name: Generate version_info.txt
         shell: pwsh
         run: |
           # Try to infer version from latest tag; fall back to 0.0.0.0
@@ -66,4 +57,20 @@ jobs:
           Write-Host '--- version_info.txt ---'
           Get-Content version_info.txt
 
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          if (Test-Path .\DesktopTileLauncher.spec) {
+            pyinstaller .\DesktopTileLauncher.spec
+          } else {
+            pyinstaller --onefile .\tile_launcher.py --name DesktopTileLauncher --icon DesktopTileLauncher.ico --version-file version_info.txt
+          }
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopTileLauncher-${{ github.ref_name }}-${{ github.run_number }}
+          # include both possible names, spec and CLI
+          path: |
+            dist/**/DesktopTileLauncher.exe
+            dist/**/DesktopTileLauncher-*.exe
