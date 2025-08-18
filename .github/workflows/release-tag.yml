@@ -1,4 +1,4 @@
-name: release-on-tag
+﻿name: release-on-tag
 
 on:
   push:
@@ -81,7 +81,7 @@ jobs:
           if (Test-Path .\DesktopTileLauncher.spec) {
             pyinstaller .\DesktopTileLauncher.spec
           } else {
-            pyinstaller --onefile .\DesktopTileLauncher.py --name DesktopTileLauncher --version-file version_info.txt
+            pyinstaller --onefile .\tile_launcher.py --name DesktopTileLauncher --icon DesktopTileLauncher.ico --version-file version_info.txt --name DesktopTileLauncher --version-file version_info.txt
           }
 
       - name: Rename EXE to include tag
@@ -109,4 +109,5 @@ jobs:
           files: |
             dist/**/DesktopTileLauncher-*.exe
           fail_on_unmatched_files: true
+
 

@@ -1,4 +1,4 @@
-name: build-windows-exe
+﻿name: build-windows-exe
 on:
   push:
     branches: [ master ]   # you're on master today
@@ -28,10 +28,11 @@ jobs:
           if (Test-Path -Path .\DesktopTileLauncher.spec) {
             pyinstaller .\DesktopTileLauncher.spec
           } else {
-            pyinstaller --onefile .\DesktopTileLauncher.py
+            pyinstaller --onefile .\tile_launcher.py --icon DesktopTileLauncher.ico --version-file version_info.txt
           }
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
             name: DesktopTileLauncher-${{ github.ref_name }}-${{ github.run_number }}
             path: dist/**/DesktopTileLauncher.exe
+
