@@ -1,0 +1,28 @@
+# .github/workflows/ci.yml
+name: lint-and-test
+on:
+  pull_request:
+  push:
+    branches: [ master ]
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: { python-version: ['3.12'] }  # expand later to 3.11 if you want
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: ${{ matrix.python-version }}, cache: 'pip' }
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          pip install ruff mypy pytest
+      - name: Ruff (lint)
+        run: ruff check .
+      - name: Ruff (format check)
+        run: ruff format --check .
+      - name: Type-check (mypy)
+        run: mypy --ignore-missing-imports .
+      - name: Tests
+        run: pytest -q
