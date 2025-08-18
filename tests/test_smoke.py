@@ -1,10 +1,17 @@
-﻿import importlib
+import importlib
 import importlib.util
 from pathlib import Path
 
+
 def _import_main_module():
     # Try common module names first (adjust this list if your module name differs)
-    for name in ("desktoptilelauncher", "desktop_tile_launcher", "DesktopTileLauncher", "app", "main"):
+    for name in (
+        "desktoptilelauncher",
+        "desktop_tile_launcher",
+        "DesktopTileLauncher",
+        "app",
+        "main",
+    ):
         try:
             return importlib.import_module(name)
         except ModuleNotFoundError:
@@ -18,13 +25,14 @@ def _import_main_module():
             spec = importlib.util.spec_from_file_location("app_under_test", candidate)
             mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
             assert spec and spec.loader, f"Could not load spec for {candidate}"
-            spec.loader.exec_module(mod)                # type: ignore[union-attr]
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
             return mod
 
     raise AssertionError(
         "Smoke test could not import your app. "
         "Add your actual module name to the candidates list in tests/test_smoke.py."
     )
+
 
 def test_app_imports_without_errors():
     mod = _import_main_module()
