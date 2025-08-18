@@ -34,17 +34,27 @@ jobs:
           # Ensure tags are present in this shallow checkout
           git fetch --force --tags 2>$null
 
-          # Try latest tag; fall back if none reachable
-          $tag = git describe --tags --abbrev=0 2>$null
-          if (-not $tag) { $tag = 'v0.0.0.0' }
+          # Prefer the current ref if it's a tag; otherwise fall back to the latest reachable tag
+          $tag = $null
+          if ($env:GITHUB_REF -match '^refs/tags/') { $tag = $env:GITHUB_REF -replace '^refs/tags/','' }
+          if (-not $tag) { $tag = (git describe --tags --abbrev=0 2>$null) }
+          if (-not $tag) { $tag = 'v0.0.0' }   # final fallback for branch builds with no tags
+          $global:LASTEXITCODE = 0             # keep the step from failing due to 'git describe' exit code
 
-          # Prevent a non-zero exit from 'git describe' breaking the step
-          $global:LASTEXITCODE = 0
+          # For display strings, keep the full tag without the leading 'v'
+          $displayVer = ($tag -replace '^v','')
 
-          $ver = $tag -replace '^v',''
-          $parts = $ver.Split('.')
-          while ($parts.Count -lt 4) { $parts += '0' }
-          $tuple = ($parts | ForEach-Object { [int]$_ }) -join ', '
+          # For numeric tuple, strip any -pre/+build suffix, split, and coerce to ints (pad to 4 parts)
+          $numericCore = ($displayVer -replace '[-+].*$','')
+          if ([string]::IsNullOrWhiteSpace($numericCore)) { $numericCore = '0.0.0' }
+
+          $parts = $numericCore -split '\.'
+          $nums  = 0..3 | ForEach-Object {
+            if ($_ -lt $parts.Count -and $parts[$_] -match '^\d+$') { [int]$parts[$_] } else { 0 }
+          }
+
+          $tuple   = ($nums -join ', ')    # e.g., "1, 2, 3, 0"
+          $fileVer = ($nums -join '.')     # e.g., "1.2.3.0" (handy if you want numeric strings)
 
           $lines = @(
             'VSVersionInfo(',
@@ -55,15 +65,20 @@ jobs:
             '  ),',
             "  kids=[StringFileInfo([StringTable('040904B0', [",
             "    StringStruct('FileDescription', 'DesktopTileLauncher'),",
-            "    StringStruct('FileVersion', '$ver'),",
+            "    StringStruct('FileVersion', '$displayVer'),",
             "    StringStruct('ProductName', 'DesktopTileLauncher'),",
-            "    StringStruct('ProductVersion', '$ver')",
+            "    StringStruct('ProductVersion', '$displayVer')",
             "  ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]",
             ')'
           )
+
           $lines -join "`r`n" | Set-Content -Path version_info.txt -Encoding ascii
-          '--- version_info.txt ---'
+          Write-Host '--- version_info.txt ---'
           Get-Content version_info.txt
+          Write-Host "Derived tag: $tag"
+          Write-Host "Numeric tuple: $tuple"
+          Write-Host "Display version: $displayVer"
+
 
       - name: Build with PyInstaller
         shell: pwsh
