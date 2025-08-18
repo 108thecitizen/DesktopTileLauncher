@@ -1,4 +1,4 @@
-# tile_launcher.py
+﻿# tile_launcher.py
 # Minimal desktop launcher: lockable tile grid that opens URLs in the default browser.
 # Windows/Mac/Linux.  Requires: Python 3.10+  pip install PySide6
 # encoding changed
@@ -12,7 +12,7 @@ import webbrowser
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, QSize
@@ -64,7 +64,7 @@ class Tile:
 class LauncherConfig:
     title: str = "Launcher"
     columns: int = 5
-    tiles: List[Tile] = None
+    tiles: list['Tile'] = field(default_factory=list)
 
     @staticmethod
     def load():
@@ -76,7 +76,7 @@ class LauncherConfig:
                 columns=data.get("columns", 5),
                 tiles=tiles,
             )
-        # first run � create a friendly default
+        # first run ï¿½ create a friendly default
         cfg = LauncherConfig(
             title="My Launcher",
             columns=5,
@@ -125,9 +125,9 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     """Generate a round icon with the first letter of the name."""
     ch = (text or "?").strip()[0].upper()
     pix = QPixmap(size, size)
-    pix.fill(Qt.transparent)
+    pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
-    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     # background circle
     color = QColor(bg)
     p.setBrush(color)
@@ -139,7 +139,7 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     font.setPointSize(int(size * 0.45))
     p.setFont(font)
     p.setPen(QColor("#222"))
-    p.drawText(pix.rect(), Qt.AlignCenter, ch)
+    p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, ch)
     p.end()
     return QIcon(pix)
 
@@ -154,11 +154,11 @@ class TileButton(QToolButton):
         self.on_remove = on_remove
 
         self.setText(tile.name)
-        self.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.setIcon(self._icon_for_tile())
         self.setIconSize(QSize(72, 72))
         self.setFixedSize(150, 140)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_style()
 
         self.clicked.connect(self._handle_click)
@@ -195,7 +195,7 @@ class TileButton(QToolButton):
         m.addAction("Open", lambda: self.on_open(self.tile))
         if not self.locked:
             m.addSeparator()
-            m.addAction("Edit�", lambda: self.on_edit(self.tile))
+            m.addAction("Editï¿½", lambda: self.on_edit(self.tile))
             m.addAction("Remove", lambda: self.on_remove(self.tile))
         m.exec(event.globalPos())
 
@@ -278,10 +278,10 @@ class Main(QMainWindow):
                 self,
                 "Unlock to edit?",
                 "Unlock the launcher to add or edit tiles?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
-            if ok != QMessageBox.Yes:
+            if ok != QMessageBox.StandardButton.Yes:
                 return
         self.locked = not self.locked
         for i in range(self.grid.count()):
@@ -297,7 +297,7 @@ class Main(QMainWindow):
         name, ok = QInputDialog.getText(self, "Tile name", "Name:")
         if not ok or not name.strip():
             return
-        url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://�):")
+        url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://ï¿½):")
         if not ok or not url.strip():
             return
 
@@ -324,11 +324,11 @@ class Main(QMainWindow):
             self,
             "Icon",
             "Change icon file?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         icon = tile.icon
-        if change_icon == QMessageBox.Yes:
+        if change_icon == QMessageBox.StandardButton.Yes:
             path, _ = QFileDialog.getOpenFileName(
                 self, "Choose icon (png/ico)", str(ICON_DIR), "Images (*.png *.ico)"
             )
@@ -342,11 +342,11 @@ class Main(QMainWindow):
         ok = QMessageBox.warning(
             self,
             "Remove tile?",
-            f"Remove �{tile.name}� from the launcher?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            f"Remove ï¿½{tile.name}ï¿½ from the launcher?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if ok == QMessageBox.Yes:
+        if ok == QMessageBox.StandardButton.Yes:
             self.cfg.tiles = [t for t in self.cfg.tiles if t is not tile]
             self.rebuild()
 
