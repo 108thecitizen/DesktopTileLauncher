@@ -2,9 +2,15 @@
 # Minimal desktop launcher: lockable tile grid that opens URLs in the default browser.
 # Windows/Mac/Linux.  Requires: Python 3.10+  pip install PySide6
 # encoding changed
+# SPDX-License-Identifier: MIT
 
 
-import json, os, sys, webbrowser, urllib.parse, urllib.request
+import json
+import os
+import sys
+import webbrowser
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import List, Optional
@@ -12,11 +18,21 @@ from typing import List, Optional
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QGridLayout, QToolButton, QMenu,
-    QFileDialog, QMessageBox, QInputDialog, QToolBar, QScrollArea
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QGridLayout,
+    QToolButton,
+    QMenu,
+    QFileDialog,
+    QMessageBox,
+    QInputDialog,
+    QToolBar,
+    QScrollArea,
 )
 
 APP_NAME = "TileLauncher"
+
 
 def app_dirs():
     if sys.platform.startswith("win"):
@@ -31,15 +47,18 @@ def app_dirs():
     icons.mkdir(parents=True, exist_ok=True)
     return cfg, icons
 
+
 CFG_DIR, ICON_DIR = app_dirs()
 CFG_PATH = CFG_DIR / "config.json"
+
 
 @dataclass
 class Tile:
     name: str
     url: str
-    icon: Optional[str] = None     # path to png/ico
-    bg: str = "#F5F6FA"            # background color (CSS)
+    icon: Optional[str] = None  # path to png/ico
+    bg: str = "#F5F6FA"  # background color (CSS)
+
 
 @dataclass
 class LauncherConfig:
@@ -52,9 +71,11 @@ class LauncherConfig:
         if CFG_PATH.exists():
             data = json.loads(CFG_PATH.read_text(encoding="utf-8"))
             tiles = [Tile(**t) for t in data.get("tiles", [])]
-            return LauncherConfig(title=data.get("title", "Launcher"),
-                                  columns=data.get("columns", 5),
-                                  tiles=tiles)
+            return LauncherConfig(
+                title=data.get("title", "Launcher"),
+                columns=data.get("columns", 5),
+                tiles=tiles,
+            )
         # first run � create a friendly default
         cfg = LauncherConfig(
             title="My Launcher",
@@ -62,16 +83,20 @@ class LauncherConfig:
             tiles=[
                 Tile("ChatGPT", "https://chat.openai.com"),
                 Tile("Gmail", "https://mail.google.com"),
-                Tile("Notion", "https://www.notion.so")
+                Tile("Notion", "https://www.notion.so"),
             ],
         )
         cfg.save()
         return cfg
 
     def save(self):
-        data = {"title": self.title, "columns": self.columns,
-                "tiles": [asdict(t) for t in self.tiles]}
+        data = {
+            "title": self.title,
+            "columns": self.columns,
+            "tiles": [asdict(t) for t in self.tiles],
+        }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
 
 def guess_domain(url: str) -> str:
     try:
@@ -79,6 +104,7 @@ def guess_domain(url: str) -> str:
         return netloc.split("@")[-1]  # strip creds if any
     except Exception:
         return ""
+
 
 def fetch_favicon(url: str, size: int = 128) -> Optional[Path]:
     """Try to save a favicon PNG using Google's s2 service."""
@@ -94,6 +120,7 @@ def fetch_favicon(url: str, size: int = 128) -> Optional[Path]:
     except Exception:
         return None
 
+
 def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     """Generate a round icon with the first letter of the name."""
     ch = (text or "?").strip()[0].upper()
@@ -105,7 +132,7 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     color = QColor(bg)
     p.setBrush(color)
     p.setPen(QColor("#D6D8E1"))
-    p.drawEllipse(1, 1, size-2, size-2)
+    p.drawEllipse(1, 1, size - 2, size - 2)
     # letter
     font = QFont()
     font.setBold(True)
@@ -115,6 +142,7 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     p.drawText(pix.rect(), Qt.AlignCenter, ch)
     p.end()
     return QIcon(pix)
+
 
 class TileButton(QToolButton):
     def __init__(self, tile: Tile, locked: bool, on_open, on_edit, on_remove):
@@ -176,6 +204,7 @@ class TileButton(QToolButton):
         self.setIcon(self._icon_for_tile())
         self._apply_style()
 
+
 class Main(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -223,10 +252,13 @@ class Main(QMainWindow):
         cols = max(1, int(self.cfg.columns))
         r = c = 0
         for tile in self.cfg.tiles:
-            btn = TileButton(tile, self.locked,
-                             on_open=self.open_tile,
-                             on_edit=self.edit_tile,
-                             on_remove=self.remove_tile)
+            btn = TileButton(
+                tile,
+                self.locked,
+                on_open=self.open_tile,
+                on_edit=self.edit_tile,
+                on_remove=self.remove_tile,
+            )
             self.grid.addWidget(btn, r, c)
             c += 1
             if c >= cols:
@@ -242,10 +274,13 @@ class Main(QMainWindow):
     # -------- actions --------
     def toggle_lock(self):
         if self.locked:
-            ok = QMessageBox.question(self, "Unlock to edit?",
-                                      "Unlock the launcher to add or edit tiles?",
-                                      QMessageBox.Yes | QMessageBox.No,
-                                      QMessageBox.No)
+            ok = QMessageBox.question(
+                self,
+                "Unlock to edit?",
+                "Unlock the launcher to add or edit tiles?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
             if ok != QMessageBox.Yes:
                 return
         self.locked = not self.locked
@@ -271,8 +306,9 @@ class Main(QMainWindow):
         icon = str(icon_path) if icon_path else None
 
         bg = "#F5F6FA"
-        self.cfg.tiles.append(Tile(name=name.strip(), url=url.strip(),
-                                   icon=icon, bg=bg))
+        self.cfg.tiles.append(
+            Tile(name=name.strip(), url=url.strip(), icon=icon, bg=bg)
+        )
         self.rebuild()
 
     def edit_tile(self, tile: Tile):
@@ -284,14 +320,18 @@ class Main(QMainWindow):
             return
 
         # optional: change icon file
-        change_icon = QMessageBox.question(self, "Icon",
-                                           "Change icon file?",
-                                           QMessageBox.Yes | QMessageBox.No,
-                                           QMessageBox.No)
+        change_icon = QMessageBox.question(
+            self,
+            "Icon",
+            "Change icon file?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
         icon = tile.icon
         if change_icon == QMessageBox.Yes:
-            path, _ = QFileDialog.getOpenFileName(self, "Choose icon (png/ico)",
-                                                  str(ICON_DIR), "Images (*.png *.ico)")
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Choose icon (png/ico)", str(ICON_DIR), "Images (*.png *.ico)"
+            )
             if path:
                 icon = path
 
@@ -299,10 +339,13 @@ class Main(QMainWindow):
         self.rebuild()
 
     def remove_tile(self, tile: Tile):
-        ok = QMessageBox.warning(self, "Remove tile?",
-                                 f"Remove �{tile.name}� from the launcher?",
-                                 QMessageBox.Yes | QMessageBox.No,
-                                 QMessageBox.No)
+        ok = QMessageBox.warning(
+            self,
+            "Remove tile?",
+            f"Remove �{tile.name}� from the launcher?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
         if ok == QMessageBox.Yes:
             self.cfg.tiles = [t for t in self.cfg.tiles if t is not tile]
             self.rebuild()
@@ -311,9 +354,9 @@ class Main(QMainWindow):
         self.cfg.save()
         QMessageBox.information(self, "Saved", f"Config saved to:\n{CFG_PATH}")
 
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     mw = Main()
     mw.show()
     sys.exit(app.exec())
-
