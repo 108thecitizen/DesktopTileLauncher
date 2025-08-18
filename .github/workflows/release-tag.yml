@@ -53,11 +53,24 @@ jobs:
       - name: Generate version_info.txt from tag
         shell: pwsh
         run: |
+          # Resolve tag (fallback to GITHUB_REF just in case)
           $tag = "${{ steps.tag.outputs.value }}"
-          $ver = $tag -replace '^v',''
-          $parts = $ver.Split('.')
-          while ($parts.Count -lt 4) { $parts += '0' }
-          $tuple = ($parts | ForEach-Object { [int]$_ }) -join ', '
+          if (-not $tag) { $tag = $env:GITHUB_REF -replace '^refs/tags/', '' }
+
+          # For display strings, keep the full tag without the leading 'v'
+          $displayVer = ($tag -replace '^v','')
+
+          # For numeric tuple, strip any -pre/+build suffix, then split & coerce to ints
+          $numericCore = ($displayVer -replace '[-+].*$','')
+          if ([string]::IsNullOrWhiteSpace($numericCore)) { $numericCore = '0.0.0' }
+
+          $parts = $numericCore -split '\.'
+          $nums  = 0..3 | ForEach-Object {
+            if ($_ -lt $parts.Count -and $parts[$_] -match '^\d+$') { [int]$parts[$_] } else { 0 }
+          }
+
+          $tuple   = ($nums -join ', ')   # e.g., "1, 2, 3, 0" for filevers/prodvers
+          $fileVer = ($nums -join '.')    # e.g., "1.2.3.0" if you ever need it
 
           $lines = @(
             'VSVersionInfo(',
@@ -68,9 +81,9 @@ jobs:
             '  ),',
             "  kids=[StringFileInfo([StringTable('040904B0', [",
             "    StringStruct('FileDescription', 'DesktopTileLauncher'),",
-            "    StringStruct('FileVersion', '$ver'),",
+            "    StringStruct('FileVersion', '$displayVer'),",
             "    StringStruct('ProductName', 'DesktopTileLauncher'),",
-            "    StringStruct('ProductVersion', '$ver')",
+            "    StringStruct('ProductVersion', '$displayVer')",
             "  ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]",
             ')'
           )
@@ -78,6 +91,10 @@ jobs:
           $lines -join "`r`n" | Set-Content -Path version_info.txt -Encoding ascii
           Write-Host '--- version_info.txt ---'
           Get-Content version_info.txt
+          Write-Host "Parsed tag: $tag"
+          Write-Host "Numeric tuple: $tuple"
+          Write-Host "Display version: $displayVer"
+
 
 
       - name: Build with PyInstaller
