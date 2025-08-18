@@ -70,7 +70,7 @@ jobs:
                 StringStruct(''ProductVersion'', ''$ver'')
               ])]), VarFileInfo([VarStruct(''Translation'', [1033, 1200])])]
             )
-            "@
+"@
 
           Set-Content -Path version_info.txt -Value $txt -Encoding ascii
 
