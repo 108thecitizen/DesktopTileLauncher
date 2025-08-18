@@ -10,6 +10,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # get full history so tags are reachable
 
       - uses: actions/setup-python@v5
         with:
@@ -29,9 +31,16 @@ jobs:
       - name: Generate version_info.txt
         shell: pwsh
         run: |
-          # Try to infer version from latest tag; fall back to 0.0.0.0
-          $tag = (git describe --tags --abbrev=0 2>$null)
+          # Ensure tags are present in this shallow checkout
+          git fetch --force --tags 2>$null
+
+          # Try latest tag; fall back if none reachable
+          $tag = git describe --tags --abbrev=0 2>$null
           if (-not $tag) { $tag = 'v0.0.0.0' }
+
+          # Prevent a non-zero exit from 'git describe' breaking the step
+          $global:LASTEXITCODE = 0
+
           $ver = $tag -replace '^v',''
           $parts = $ver.Split('.')
           while ($parts.Count -lt 4) { $parts += '0' }
@@ -52,9 +61,8 @@ jobs:
             "  ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]",
             ')'
           )
-
           $lines -join "`r`n" | Set-Content -Path version_info.txt -Encoding ascii
-          Write-Host '--- version_info.txt ---'
+          '--- version_info.txt ---'
           Get-Content version_info.txt
 
       - name: Build with PyInstaller
@@ -70,7 +78,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DesktopTileLauncher-${{ github.ref_name }}-${{ github.run_number }}
-          # include both possible names, spec and CLI
           path: |
             dist/**/DesktopTileLauncher.exe
             dist/**/DesktopTileLauncher-*.exe
