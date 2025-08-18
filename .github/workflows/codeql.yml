@@ -1,11 +1,36 @@
-# .github/workflows/codeql.yml
-name: codeql
+name: CodeQL
+
 on:
-  push: { branches: [ master ] }
+  push:
+    branches: [ main, master ]
   pull_request:
-  schedule: [ { cron: '0 3 * * 1' } ]  # weekly
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 4 * * 1'   # weekly, 04:00 UTC on Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   analyze:
-    uses: github/codeql-action/.github/workflows/codeql.yml@v3
-    with:
-      languages: python
+    name: Analyze (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # For interpreted languages, use 'none' (no build)
+          build-mode: none
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:python"
