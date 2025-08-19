@@ -220,7 +220,6 @@ class Main(QMainWindow):
 
         self.setWindowTitle(self.cfg.title)
 
-
         width, height = 900, 600
         self.resize(width, height)
         if len(self.cfg.tiles) > 25:
@@ -229,7 +228,6 @@ class Main(QMainWindow):
             needed_width = margins + cols * tile_w + (cols - 1) * spacing
             if needed_width > width:
                 self.resize(needed_width, height)
-
 
         self.toolbar = QToolBar()
         self.addToolBar(Qt.TopToolBarArea, self.toolbar)
