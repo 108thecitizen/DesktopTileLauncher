@@ -240,9 +240,6 @@ class Main(QMainWindow):
         add_action.triggered.connect(self.add_tile)
         self.toolbar.addAction(add_action)
 
-        save_action = QAction("?? Save", self)
-        save_action.triggered.connect(self.save)
-        self.toolbar.addAction(save_action)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -358,6 +355,7 @@ class Main(QMainWindow):
         self.cfg.tiles.append(
             Tile(name=name.strip(), url=url.strip(), icon=icon, bg=bg)
         )
+        self.cfg.save()
         self.rebuild()
 
     def edit_tile(self, tile: Tile):
@@ -385,6 +383,7 @@ class Main(QMainWindow):
                 icon = path
 
         tile.name, tile.url, tile.icon = name.strip(), url.strip(), icon
+        self.cfg.save()
         self.rebuild()
 
     def remove_tile(self, tile: Tile):
@@ -397,12 +396,8 @@ class Main(QMainWindow):
         )
         if ok == QMessageBox.StandardButton.Yes:
             self.cfg.tiles = [t for t in self.cfg.tiles if t is not tile]
+            self.cfg.save()
             self.rebuild()
-
-    def save(self):
-        self.cfg.save()
-        QMessageBox.information(self, "Saved", f"Config saved to:\n{CFG_PATH}")
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
