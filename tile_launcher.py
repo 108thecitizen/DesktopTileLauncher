@@ -211,8 +211,23 @@ class Main(QMainWindow):
         self.cfg = LauncherConfig.load()
         self.locked = True
 
+        # If the user has more than 25 tiles saved, automatically expand to
+        # show six tiles across.  This adjusts both the column count and the
+        # window width so that the grid fits without the user having to resize
+        # manually.
+        if len(self.cfg.tiles) > 25 and self.cfg.columns < 6:
+            self.cfg.columns = 6
+
         self.setWindowTitle(self.cfg.title)
-        self.resize(900, 600)
+
+        width, height = 900, 600
+        self.resize(width, height)
+        if len(self.cfg.tiles) > 25:
+            cols = max(6, self.cfg.columns)
+            tile_w, spacing, margins = 150, 12, 32
+            needed_width = margins + cols * tile_w + (cols - 1) * spacing
+            if needed_width > width:
+                self.resize(needed_width, height)
 
         self.toolbar = QToolBar()
         self.addToolBar(Qt.TopToolBarArea, self.toolbar)
