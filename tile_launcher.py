@@ -240,7 +240,6 @@ class Main(QMainWindow):
         add_action.triggered.connect(self.add_tile)
         self.toolbar.addAction(add_action)
 
-
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.container = QWidget()
@@ -398,6 +397,7 @@ class Main(QMainWindow):
             self.cfg.tiles = [t for t in self.cfg.tiles if t is not tile]
             self.cfg.save()
             self.rebuild()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
