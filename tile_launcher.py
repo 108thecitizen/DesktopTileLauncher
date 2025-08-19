@@ -11,24 +11,24 @@ import sys
 import webbrowser
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from dataclasses import dataclass, asdict, field
+from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QAction
+from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
     QGridLayout,
-    QToolButton,
-    QMenu,
-    QFileDialog,
-    QMessageBox,
     QInputDialog,
-    QToolBar,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
     QScrollArea,
+    QToolBar,
+    QToolButton,
+    QFileDialog,
+    QWidget,
 )
 
 APP_NAME = "TileLauncher"
@@ -212,7 +212,6 @@ class Main(QMainWindow):
         self.locked = True
 
         self.setWindowTitle(self.cfg.title)
-        self.resize(900, 600)
 
         self.toolbar = QToolBar()
         self.addToolBar(Qt.TopToolBarArea, self.toolbar)
@@ -267,6 +266,27 @@ class Main(QMainWindow):
 
         self.container.adjustSize()
         self.update_lock_ui()
+        QTimer.singleShot(0, self.resize_to_fit_tiles)
+
+    def resize_to_fit_tiles(self):
+        cols = max(1, int(self.cfg.columns))
+        tile_w, tile_h = 150, 140
+        spacing = self.grid.spacing()
+        margins = self.grid.contentsMargins()
+        rows = (len(self.cfg.tiles) + cols - 1) // cols
+
+        width = cols * tile_w + max(0, cols - 1) * spacing + margins.left() + margins.right()
+        height = rows * tile_h + max(0, rows - 1) * spacing + margins.top() + margins.bottom()
+
+        frame_w = self.frameGeometry().width() - self.geometry().width()
+        frame_h = self.frameGeometry().height() - self.geometry().height()
+        width += frame_w
+        height += frame_h
+
+        screen = QApplication.primaryScreen().availableGeometry()
+        width = min(width, screen.width())
+        height = min(height, screen.height())
+        self.resize(width, height)
 
     def update_lock_ui(self):
         self.lock_action.setText("?? Locked" if self.locked else "?? Editing")
