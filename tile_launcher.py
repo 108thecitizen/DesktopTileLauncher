@@ -298,6 +298,9 @@ class Main(QMainWindow):
         height = min(height, screen.height())
         self.resize(width, height)
 
+        if len(self.cfg.tiles) > 20:
+            self.move(self.x(), screen.top())
+
     def update_lock_ui(self):
         self.lock_action.setText("?? Locked" if self.locked else "?? Editing")
 
