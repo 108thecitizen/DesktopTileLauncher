@@ -275,8 +275,18 @@ class Main(QMainWindow):
         margins = self.grid.contentsMargins()
         rows = (len(self.cfg.tiles) + cols - 1) // cols
 
-        width = cols * tile_w + max(0, cols - 1) * spacing + margins.left() + margins.right()
-        height = rows * tile_h + max(0, rows - 1) * spacing + margins.top() + margins.bottom()
+        width = (
+            cols * tile_w
+            + max(0, cols - 1) * spacing
+            + margins.left()
+            + margins.right()
+        )
+        height = (
+            rows * tile_h
+            + max(0, rows - 1) * spacing
+            + margins.top()
+            + margins.bottom()
+        )
 
         frame_w = self.frameGeometry().width() - self.geometry().width()
         frame_h = self.frameGeometry().height() - self.geometry().height()
