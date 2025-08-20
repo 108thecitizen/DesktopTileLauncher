@@ -1,9 +1,9 @@
-﻿# .github/workflows/ci.yml
+# .github/workflows/ci.yml
 name: lint-and-test
 on:
   pull_request:
   push:
-    branches: [ master ]
+    branches: [ main ]
 jobs:
   python:
     runs-on: ubuntu-latest

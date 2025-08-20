@@ -1,8 +1,8 @@
-﻿name: build-windows-exe
+name: build-windows-exe
 
 on:
   push:
-    branches: [ master ]   # you're on master today
+    branches: [ main ]   # you're on master today
   workflow_dispatch:
 
 jobs:
