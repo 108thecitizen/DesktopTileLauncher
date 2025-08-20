@@ -16,7 +16,16 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QIcon,
+    QPainter,
+    QPixmap,
+    QDrag,
+    QMimeData,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -145,13 +154,24 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
 
 
 class TileButton(QToolButton):
-    def __init__(self, tile: Tile, locked: bool, on_open, on_edit, on_remove):
+    def __init__(
+        self,
+        tile: Tile,
+        locked: bool,
+        index: int,
+        on_open,
+        on_edit,
+        on_remove,
+        on_move,
+    ):
         super().__init__()
         self.tile = tile
         self.locked = locked
+        self.index = index
         self.on_open = on_open
         self.on_edit = on_edit
         self.on_remove = on_remove
+        self.on_move = on_move
 
         self.setText(tile.name)
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -159,6 +179,8 @@ class TileButton(QToolButton):
         self.setIconSize(QSize(72, 72))
         self.setFixedSize(150, 140)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAcceptDrops(True)
+        self.drag_start_pos = None
         self._apply_style()
 
         self.clicked.connect(self._handle_click)
@@ -198,6 +220,40 @@ class TileButton(QToolButton):
             m.addAction("Editï¿½", lambda: self.on_edit(self.tile))
             m.addAction("Remove", lambda: self.on_remove(self.tile))
         m.exec(event.globalPos())
+
+    # ----- drag and drop -----
+    def mousePressEvent(self, event):
+        if not self.locked and event.button() == Qt.LeftButton:
+            self.drag_start_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self.locked
+            or self.drag_start_pos is None
+            or not (event.buttons() & Qt.LeftButton)
+        ):
+            return super().mouseMoveEvent(event)
+        if (
+            event.position().toPoint() - self.drag_start_pos
+        ).manhattanLength() < QApplication.startDragDistance():
+            return super().mouseMoveEvent(event)
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(str(self.index))
+        drag.setMimeData(mime)
+        drag.setPixmap(self.icon().pixmap(self.iconSize()))
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def dragEnterEvent(self, event):
+        if not self.locked and event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        if not self.locked and event.mimeData().hasText():
+            src = int(event.mimeData().text())
+            self.on_move(src, self.index)
+            event.acceptProposedAction()
 
     def refresh(self, locked: bool):
         self.locked = locked
@@ -262,13 +318,15 @@ class Main(QMainWindow):
 
         cols = max(1, int(self.cfg.columns))
         r = c = 0
-        for tile in self.cfg.tiles:
+        for idx, tile in enumerate(self.cfg.tiles):
             btn = TileButton(
                 tile,
                 self.locked,
+                idx,
                 on_open=self.open_tile,
                 on_edit=self.edit_tile,
                 on_remove=self.remove_tile,
+                on_move=self.move_tile,
             )
             self.grid.addWidget(btn, r, c)
             c += 1
@@ -334,6 +392,16 @@ class Main(QMainWindow):
             if isinstance(w, TileButton):
                 w.refresh(self.locked)
         self.update_lock_ui()
+
+    def move_tile(self, src: int, dest: int):
+        if src == dest:
+            return
+        tile = self.cfg.tiles.pop(src)
+        if src < dest:
+            dest -= 1
+        self.cfg.tiles.insert(dest, tile)
+        self.cfg.save()
+        self.rebuild()
 
     def open_tile(self, tile: Tile):
         webbrowser.open(tile.url)  # default browser
