@@ -11,12 +11,23 @@ import sys
 import webbrowser
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QDrag,
+    QDragEnterEvent,
+    QDropEvent,
+    QFont,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -145,13 +156,25 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
 
 
 class TileButton(QToolButton):
-    def __init__(self, tile: Tile, locked: bool, on_open, on_edit, on_remove):
+    def __init__(
+        self,
+        tile: Tile,
+        index: int,
+        locked: bool,
+        on_open,
+        on_edit,
+        on_remove,
+        on_move: Callable[[int, int], None],
+    ) -> None:
         super().__init__()
         self.tile = tile
+        self.index = index
         self.locked = locked
         self.on_open = on_open
         self.on_edit = on_edit
         self.on_remove = on_remove
+        self.on_move = on_move
+        self._drag_start_pos: QPoint | None = None
 
         self.setText(tile.name)
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
@@ -159,6 +182,7 @@ class TileButton(QToolButton):
         self.setIconSize(QSize(72, 72))
         self.setFixedSize(150, 140)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAcceptDrops(not locked)
         self._apply_style()
 
         self.clicked.connect(self._handle_click)
@@ -199,8 +223,39 @@ class TileButton(QToolButton):
             m.addAction("Remove", lambda: self.on_remove(self.tile))
         m.exec(event.globalPos())
 
-    def refresh(self, locked: bool):
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self.locked and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self.locked or self._drag_start_pos is None:
+            super().mouseMoveEvent(event)
+            return
+        if (
+            event.position().toPoint() - self._drag_start_pos
+        ).manhattanLength() < QApplication.startDragDistance():
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(str(self.index))
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.MoveAction)
+        self._drag_start_pos = None
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if not self.locked and event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        if not self.locked and event.mimeData().hasText():
+            from_idx = int(event.mimeData().text())
+            self.on_move(from_idx, self.index)
+            event.acceptProposedAction()
+
+    def refresh(self, locked: bool) -> None:
         self.locked = locked
+        self.setAcceptDrops(not locked)
         self.setIcon(self._icon_for_tile())
         self._apply_style()
 
@@ -262,13 +317,15 @@ class Main(QMainWindow):
 
         cols = max(1, int(self.cfg.columns))
         r = c = 0
-        for tile in self.cfg.tiles:
+        for idx, tile in enumerate(self.cfg.tiles):
             btn = TileButton(
                 tile,
+                idx,
                 self.locked,
                 on_open=self.open_tile,
                 on_edit=self.edit_tile,
                 on_remove=self.remove_tile,
+                on_move=self.move_tile,
             )
             self.grid.addWidget(btn, r, c)
             c += 1
@@ -337,6 +394,17 @@ class Main(QMainWindow):
 
     def open_tile(self, tile: Tile):
         webbrowser.open(tile.url)  # default browser
+
+    def move_tile(self, from_idx: int, to_idx: int) -> None:
+        if from_idx == to_idx:
+            return
+        tiles = self.cfg.tiles
+        tile = tiles.pop(from_idx)
+        if from_idx < to_idx:
+            to_idx -= 1
+        tiles.insert(to_idx, tile)
+        self.cfg.save()
+        self.rebuild()
 
     def add_tile(self):
         name, ok = QInputDialog.getText(self, "Tile name", "Name:")
