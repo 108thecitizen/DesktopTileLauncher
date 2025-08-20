@@ -1,8 +1,8 @@
-name: build-windows-exe
+﻿name: build-windows-exe
 
 on:
   push:
-    branches: [ main ]   # you're on master today
+    branches: [ main ]   # you're on main today
   workflow_dispatch:
 
 jobs:
@@ -113,3 +113,4 @@ jobs:
             dist/**/DesktopTileLauncher-*.exe
           # optional but helpful:
           # if-no-files-found: error
+
