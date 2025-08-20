@@ -89,10 +89,27 @@ jobs:
             pyinstaller --onefile .\tile_launcher.py --name DesktopTileLauncher --icon DesktopTileLauncher.ico --version-file version_info.txt
           }
 
+        # Add this right before "Upload artifact"
+      - name: Sanitize artifact name
+        id: artifact_vars
+        shell: pwsh
+        run: |
+          # Build the raw name the way you like it
+          $raw = "DesktopTileLauncher-$env:GITHUB_REF_NAME-${{ github.run_number }}"
+          # Replace characters that upload-artifact forbids:  " : < > | * ? \ / and newlines
+          $safe = $raw -replace '[<>:"/\\|?*\r\n]+', '-'
+          # Collapse runs of '-' and trim leading/trailing '-'
+          $safe = ($safe -replace '-{2,}', '-').Trim('-')
+          # Stay well under the 255-char limit for artifact names
+          if ($safe.Length -gt 240) { $safe = $safe.Substring(0,240) }
+          "name=$safe" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DesktopTileLauncher-${{ github.ref_name }}-${{ github.run_number }}
+          name: ${{ steps.artifact_vars.outputs.name }}
           path: |
             dist/**/DesktopTileLauncher.exe
             dist/**/DesktopTileLauncher-*.exe
+          # optional but helpful:
+          # if-no-files-found: error
