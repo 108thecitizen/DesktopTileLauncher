@@ -1,5 +1,5 @@
 # tile_launcher.py
-# Minimal desktop launcher: lockable tile grid that opens URLs in the default browser.
+# Minimal desktop launcher: tile grid that opens URLs in the default browser.
 # Windows/Mac/Linux.  Requires: Python 3.10+  pip install PySide6
 # encoding changed
 # SPDX-License-Identifier: MIT
@@ -160,7 +160,6 @@ class TileButton(QToolButton):
         self,
         tile: Tile,
         index: int,
-        locked: bool,
         on_open,
         on_edit,
         on_remove,
@@ -169,7 +168,6 @@ class TileButton(QToolButton):
         super().__init__()
         self.tile = tile
         self.index = index
-        self.locked = locked
         self.on_open = on_open
         self.on_edit = on_edit
         self.on_remove = on_remove
@@ -182,7 +180,7 @@ class TileButton(QToolButton):
         self.setIconSize(QSize(72, 72))
         self.setFixedSize(150, 140)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAcceptDrops(not locked)
+        self.setAcceptDrops(True)
         self._apply_style()
 
         self.clicked.connect(self._handle_click)
@@ -209,27 +207,23 @@ class TileButton(QToolButton):
         return letter_icon(self.tile.name, 92, self.tile.bg)
 
     def _handle_click(self):
-        if self.locked:
-            self.on_open(self.tile)
-        else:
-            self.on_edit(self.tile)
+        self.on_open(self.tile)
 
     def contextMenuEvent(self, event):
         m = QMenu(self)
         m.addAction("Open", lambda: self.on_open(self.tile))
-        if not self.locked:
-            m.addSeparator()
-            m.addAction("Editï¿½", lambda: self.on_edit(self.tile))
-            m.addAction("Remove", lambda: self.on_remove(self.tile))
+        m.addSeparator()
+        m.addAction("Editï¿½", lambda: self.on_edit(self.tile))
+        m.addAction("Remove", lambda: self.on_remove(self.tile))
         m.exec(event.globalPos())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if not self.locked and event.button() == Qt.MouseButton.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.position().toPoint()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self.locked or self._drag_start_pos is None:
+        if self._drag_start_pos is None:
             super().mouseMoveEvent(event)
             return
         if (
@@ -244,27 +238,20 @@ class TileButton(QToolButton):
         self._drag_start_pos = None
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
-        if not self.locked and event.mimeData().hasText():
+        if event.mimeData().hasText():
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
-        if not self.locked and event.mimeData().hasText():
+        if event.mimeData().hasText():
             from_idx = int(event.mimeData().text())
             self.on_move(from_idx, self.index)
             event.acceptProposedAction()
-
-    def refresh(self, locked: bool) -> None:
-        self.locked = locked
-        self.setAcceptDrops(not locked)
-        self.setIcon(self._icon_for_tile())
-        self._apply_style()
 
 
 class Main(QMainWindow):
     def __init__(self):
         super().__init__()
         self.cfg = LauncherConfig.load()
-        self.locked = True
 
         # If the user has more than 25 tiles saved, automatically expand to
         # show six tiles across.  This adjusts both the column count and the
@@ -286,10 +273,6 @@ class Main(QMainWindow):
 
         self.toolbar = QToolBar()
         self.addToolBar(Qt.TopToolBarArea, self.toolbar)
-
-        self.lock_action = QAction("?? Locked", self)
-        self.lock_action.triggered.connect(self.toggle_lock)
-        self.toolbar.addAction(self.lock_action)
 
         add_action = QAction("? Add", self)
         add_action.triggered.connect(self.add_tile)
@@ -321,7 +304,6 @@ class Main(QMainWindow):
             btn = TileButton(
                 tile,
                 idx,
-                self.locked,
                 on_open=self.open_tile,
                 on_edit=self.edit_tile,
                 on_remove=self.remove_tile,
@@ -334,7 +316,6 @@ class Main(QMainWindow):
                 r += 1
 
         self.container.adjustSize()
-        self.update_lock_ui()
         QTimer.singleShot(0, self.resize_to_fit_tiles)
 
     def resize_to_fit_tiles(self):
@@ -370,28 +351,7 @@ class Main(QMainWindow):
         if len(self.cfg.tiles) > 20:
             self.move(self.x(), screen.top())
 
-    def update_lock_ui(self):
-        self.lock_action.setText("?? Locked" if self.locked else "?? Editing")
-
     # -------- actions --------
-    def toggle_lock(self):
-        if self.locked:
-            ok = QMessageBox.question(
-                self,
-                "Unlock to edit?",
-                "Unlock the launcher to add or edit tiles?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if ok != QMessageBox.StandardButton.Yes:
-                return
-        self.locked = not self.locked
-        for i in range(self.grid.count()):
-            w = self.grid.itemAt(i).widget()
-            if isinstance(w, TileButton):
-                w.refresh(self.locked)
-        self.update_lock_ui()
-
     def open_tile(self, tile: Tile):
         webbrowser.open(tile.url)  # default browser
 
