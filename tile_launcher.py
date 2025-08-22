@@ -253,11 +253,14 @@ class Main(QMainWindow):
         super().__init__()
         self.cfg = LauncherConfig.load()
 
-        # If the user has more than 25 tiles saved, automatically expand to
-        # show six tiles across.  This adjusts both the column count and the
-        # window width so that the grid fits without the user having to resize
-        # manually.
-        if len(self.cfg.tiles) > 25 and self.cfg.columns < 6:
+        # Automatically expand to show more columns based on the number of
+        # tiles. More than 25 tiles expands to six columns and more than 36
+        # tiles expands to seven columns. This adjusts both the column count
+        # and the window width so that the grid fits without the user having to
+        # resize manually.
+        if len(self.cfg.tiles) > 36 and self.cfg.columns < 7:
+            self.cfg.columns = 7
+        elif len(self.cfg.tiles) > 25 and self.cfg.columns < 6:
             self.cfg.columns = 6
 
         self.setWindowTitle(self.cfg.title)
