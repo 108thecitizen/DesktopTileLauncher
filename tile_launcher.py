@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QScrollArea,
+    QTabWidget,
     QToolBar,
     QToolButton,
     QFileDialog,
@@ -67,6 +68,7 @@ CFG_PATH = CFG_DIR / "config.json"
 class Tile:
     name: str
     url: str
+    tab: str = "Main"
     icon: Optional[str] = None  # path to png/ico
     bg: str = "#F5F6FA"  # background color (CSS)
 
@@ -76,16 +78,23 @@ class LauncherConfig:
     title: str = "Launcher"
     columns: int = 5
     tiles: list["Tile"] = field(default_factory=list)
+    tabs: list[str] = field(default_factory=lambda: ["Main"])
 
     @staticmethod
     def load():
         if CFG_PATH.exists():
             data = json.loads(CFG_PATH.read_text(encoding="utf-8"))
             tiles = [Tile(**t) for t in data.get("tiles", [])]
+            tabs = data.get("tabs") or ["Main"]
+            # ensure all tabs referenced by tiles exist
+            for t in tiles:
+                if t.tab not in tabs:
+                    tabs.append(t.tab)
             return LauncherConfig(
                 title=data.get("title", "Launcher"),
                 columns=data.get("columns", 5),
                 tiles=tiles,
+                tabs=tabs,
             )
         # first run ï¿½ create a friendly default
         cfg = LauncherConfig(
@@ -96,6 +105,7 @@ class LauncherConfig:
                 Tile("Gmail", "https://mail.google.com"),
                 Tile("Notion", "https://www.notion.so"),
             ],
+            tabs=["Main"],
         )
         cfg.save()
         return cfg
@@ -105,6 +115,7 @@ class LauncherConfig:
             "title": self.title,
             "columns": self.columns,
             "tiles": [asdict(t) for t in self.tiles],
+            "tabs": self.tabs,
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -164,6 +175,8 @@ class TileButton(QToolButton):
         on_edit,
         on_remove,
         on_move: Callable[[int, int], None],
+        on_change_tab: Callable[[Tile, str], None],
+        tabs: list[str],
     ) -> None:
         super().__init__()
         self.tile = tile
@@ -172,6 +185,8 @@ class TileButton(QToolButton):
         self.on_edit = on_edit
         self.on_remove = on_remove
         self.on_move = on_move
+        self.on_change_tab = on_change_tab
+        self.tabs = tabs
         self._drag_start_pos: QPoint | None = None
 
         self.setText(tile.name)
@@ -215,6 +230,10 @@ class TileButton(QToolButton):
         m.addSeparator()
         m.addAction("Editï¿½", lambda: self.on_edit(self.tile))
         m.addAction("Remove", lambda: self.on_remove(self.tile))
+        assign = m.addMenu("Assign to Tab")
+        for name in self.tabs:
+            if name != self.tile.tab:
+                assign.addAction(name, lambda n=name: self.on_change_tab(self.tile, n))
         m.exec(event.globalPos())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -249,15 +268,15 @@ class TileButton(QToolButton):
 
 
 class Main(QMainWindow):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.cfg = LauncherConfig.load()
 
         # Automatically expand to show more columns based on the number of
-        # tiles. More than 25 tiles expands to six columns and more than 36
-        # tiles expands to seven columns. This adjusts both the column count
-        # and the window width so that the grid fits without the user having to
-        # resize manually.
+        # tiles across all tabs. More than 25 tiles expands to six columns and
+        # more than 36 tiles expands to seven columns. This adjusts both the
+        # column count and the window width so that the grid fits without the
+        # user having to resize manually.
         if len(self.cfg.tiles) > 36 and self.cfg.columns < 7:
             self.cfg.columns = 7
         elif len(self.cfg.tiles) > 25 and self.cfg.columns < 6:
@@ -274,59 +293,87 @@ class Main(QMainWindow):
             if needed_width > width:
                 self.resize(needed_width, height)
 
+        # toolbar and menus
         self.toolbar = QToolBar()
-        self.addToolBar(Qt.TopToolBarArea, self.toolbar)
-
-        add_action = QAction("? Add", self)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
+        add_action = QAction("➕ Add", self)
         add_action.triggered.connect(self.add_tile)
         self.toolbar.addAction(add_action)
 
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.container = QWidget()
-        self.grid = QGridLayout(self.container)
-        self.grid.setSpacing(12)
-        self.grid.setContentsMargins(16, 16, 16, 16)
-        self.scroll.setWidget(self.container)
-        self.setCentralWidget(self.scroll)
+        tab_menu = self.menuBar().addMenu("Tabs")
+        tab_menu.addAction("Add Tab", self.add_tab)
+        tab_menu.addAction("Rename Tab", self.rename_tab)
+        tab_menu.addAction("Delete Tab", self.delete_tab)
+
+        self.tabs_widget = QTabWidget()
+        self.tabs_widget.currentChanged.connect(
+            lambda _=0: QTimer.singleShot(0, self.resize_to_fit_tiles)
+        )
+        self.setCentralWidget(self.tabs_widget)
 
         self.rebuild()
 
     # -------- UI building --------
-    def rebuild(self):
-        # clear
-        while self.grid.count():
-            item = self.grid.takeAt(0)
+    def rebuild(self) -> None:
+        self.tabs_widget.clear()
+        self._grids: dict[str, QGridLayout] = {}
+        for tab in self.cfg.tabs:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            container = QWidget()
+            grid = QGridLayout(container)
+            grid.setSpacing(12)
+            grid.setContentsMargins(16, 16, 16, 16)
+            scroll.setWidget(container)
+            self.tabs_widget.addTab(scroll, tab)
+            self._grids[tab] = grid
+            self._populate_tab(tab)
+        QTimer.singleShot(0, self.resize_to_fit_tiles)
+
+    def _populate_tab(self, tab: str) -> None:
+        grid = self._grids[tab]
+        while grid.count():
+            item = grid.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
 
         cols = max(1, int(self.cfg.columns))
         r = c = 0
-        for idx, tile in enumerate(self.cfg.tiles):
+        tab_tiles = [t for t in self.cfg.tiles if t.tab == tab]
+        all_tabs = list(self.cfg.tabs)
+        for idx, tile in enumerate(tab_tiles):
+
+            def move(f: int, t: int, tab_name: str = tab) -> None:
+                self.move_tile(tab_name, f, t)
+
             btn = TileButton(
                 tile,
                 idx,
                 on_open=self.open_tile,
                 on_edit=self.edit_tile,
                 on_remove=self.remove_tile,
-                on_move=self.move_tile,
+                on_move=move,
+                on_change_tab=self.change_tile_tab,
+                tabs=all_tabs,
             )
-            self.grid.addWidget(btn, r, c)
+            grid.addWidget(btn, r, c)
             c += 1
             if c >= cols:
                 c = 0
                 r += 1
 
-        self.container.adjustSize()
-        QTimer.singleShot(0, self.resize_to_fit_tiles)
-
-    def resize_to_fit_tiles(self):
+    def resize_to_fit_tiles(self) -> None:
         cols = max(1, int(self.cfg.columns))
         tile_w, tile_h = 150, 140
-        spacing = self.grid.spacing()
-        margins = self.grid.contentsMargins()
-        rows = (len(self.cfg.tiles) + cols - 1) // cols
+        current = self.current_tab()
+        grid = self._grids.get(current)
+        if grid is None:
+            return
+        spacing = grid.spacing()
+        margins = grid.contentsMargins()
+        tile_count = len([t for t in self.cfg.tiles if t.tab == current])
+        rows = (tile_count + cols - 1) // cols
 
         width = (
             cols * tile_w
@@ -351,29 +398,36 @@ class Main(QMainWindow):
         height = min(height, screen.height())
         self.resize(width, height)
 
-        if len(self.cfg.tiles) > 20:
+        if tile_count > 20:
             self.move(self.x(), screen.top())
 
+    def current_tab(self) -> str:
+        idx = self.tabs_widget.currentIndex()
+        if idx < 0:
+            return "Main"
+        return self.tabs_widget.tabText(idx)
+
     # -------- actions --------
-    def open_tile(self, tile: Tile):
+    def open_tile(self, tile: Tile) -> None:
         webbrowser.open(tile.url)  # default browser
 
-    def move_tile(self, from_idx: int, to_idx: int) -> None:
+    def move_tile(self, tab: str, from_idx: int, to_idx: int) -> None:
         if from_idx == to_idx:
             return
-        tiles = self.cfg.tiles
-        tile = tiles.pop(from_idx)
+        indices = [i for i, t in enumerate(self.cfg.tiles) if t.tab == tab]
+        tile = self.cfg.tiles.pop(indices[from_idx])
+        insert_at = indices[to_idx]
         if from_idx < to_idx:
-            to_idx -= 1
-        tiles.insert(to_idx, tile)
+            insert_at -= 1
+        self.cfg.tiles.insert(insert_at, tile)
         self.cfg.save()
-        self.rebuild()
+        self._populate_tab(tab)
 
-    def add_tile(self):
+    def add_tile(self) -> None:
         name, ok = QInputDialog.getText(self, "Tile name", "Name:")
         if not ok or not name.strip():
             return
-        url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://ï¿½):")
+        url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://…):")
         if not ok or not url.strip():
             return
 
@@ -382,13 +436,24 @@ class Main(QMainWindow):
         icon = str(icon_path) if icon_path else None
 
         bg = "#F5F6FA"
+        tab, ok = QInputDialog.getItem(
+            self,
+            "Assign Tab",
+            "Tab:",
+            self.cfg.tabs,
+            0,
+            False,
+        )
+        if not ok or not tab:
+            tab = "Main"
         self.cfg.tiles.append(
-            Tile(name=name.strip(), url=url.strip(), icon=icon, bg=bg)
+            Tile(name=name.strip(), url=url.strip(), icon=icon, bg=bg, tab=tab)
         )
         self.cfg.save()
         self.rebuild()
+        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tab))
 
-    def edit_tile(self, tile: Tile):
+    def edit_tile(self, tile: Tile) -> None:
         name, ok = QInputDialog.getText(self, "Edit tile", "Name:", text=tile.name)
         if not ok or not name.strip():
             return
@@ -416,11 +481,11 @@ class Main(QMainWindow):
         self.cfg.save()
         self.rebuild()
 
-    def remove_tile(self, tile: Tile):
+    def remove_tile(self, tile: Tile) -> None:
         ok = QMessageBox.warning(
             self,
             "Remove tile?",
-            f"Remove ï¿½{tile.name}ï¿½ from the launcher?",
+            f"Remove “{tile.name}” from the launcher?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -428,6 +493,69 @@ class Main(QMainWindow):
             self.cfg.tiles = [t for t in self.cfg.tiles if t is not tile]
             self.cfg.save()
             self.rebuild()
+
+    def change_tile_tab(self, tile: Tile, new_tab: str) -> None:
+        tile.tab = new_tab
+        self.cfg.save()
+        self.rebuild()
+        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(new_tab))
+
+    def add_tab(self) -> None:
+        name, ok = QInputDialog.getText(self, "Add Tab", "Tab name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in self.cfg.tabs:
+            QMessageBox.warning(
+                self, "Tab exists", "A tab with that name exists already."
+            )
+            return
+        self.cfg.tabs.append(name)
+        self.cfg.save()
+        self.rebuild()
+        self.tabs_widget.setCurrentIndex(len(self.cfg.tabs) - 1)
+
+    def rename_tab(self) -> None:
+        current = self.current_tab()
+        if current == "Main":
+            QMessageBox.warning(self, "Not allowed", "The Main tab cannot be renamed.")
+            return
+        name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", text=current)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if name in self.cfg.tabs:
+            QMessageBox.warning(
+                self, "Tab exists", "A tab with that name exists already."
+            )
+            return
+        idx = self.cfg.tabs.index(current)
+        self.cfg.tabs[idx] = name
+        for t in self.cfg.tiles:
+            if t.tab == current:
+                t.tab = name
+        self.cfg.save()
+        self.rebuild()
+        self.tabs_widget.setCurrentIndex(idx)
+
+    def delete_tab(self) -> None:
+        current = self.current_tab()
+        if current == "Main":
+            QMessageBox.warning(self, "Not allowed", "The Main tab cannot be deleted.")
+            return
+        ok = QMessageBox.question(
+            self,
+            "Delete Tab",
+            f"Delete tab '{current}' and all its tiles?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        self.cfg.tabs = [t for t in self.cfg.tabs if t != current]
+        self.cfg.tiles = [t for t in self.cfg.tiles if t.tab != current]
+        self.cfg.save()
+        self.rebuild()
 
 
 if __name__ == "__main__":
