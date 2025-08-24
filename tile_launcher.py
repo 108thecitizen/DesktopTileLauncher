@@ -11,7 +11,7 @@ import sys
 import webbrowser
 import urllib.parse
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -171,9 +171,10 @@ class TileButton(QToolButton):
         self,
         tile: Tile,
         index: int,
-        on_open,
-        on_edit,
-        on_remove,
+        on_open: Callable[[Tile], None],
+        on_edit: Callable[[Tile], None],
+        on_remove: Callable[[Tile], None],
+        on_duplicate: Callable[[Tile], None],
         on_move: Callable[[int, int], None],
         on_change_tab: Callable[[Tile, str], None],
         tabs: list[str],
@@ -184,6 +185,7 @@ class TileButton(QToolButton):
         self.on_open = on_open
         self.on_edit = on_edit
         self.on_remove = on_remove
+        self.on_duplicate = on_duplicate
         self.on_move = on_move
         self.on_change_tab = on_change_tab
         self.tabs = tabs
@@ -228,7 +230,8 @@ class TileButton(QToolButton):
         m = QMenu(self)
         m.addAction("Open", lambda: self.on_open(self.tile))
         m.addSeparator()
-        m.addAction("Editï¿½", lambda: self.on_edit(self.tile))
+        m.addAction("Edit…", lambda: self.on_edit(self.tile))
+        m.addAction("Duplicate", lambda: self.on_duplicate(self.tile))
         m.addAction("Remove", lambda: self.on_remove(self.tile))
         assign = m.addMenu("Assign to Tab")
         for name in self.tabs:
@@ -353,6 +356,7 @@ class Main(QMainWindow):
                 on_open=self.open_tile,
                 on_edit=self.edit_tile,
                 on_remove=self.remove_tile,
+                on_duplicate=self.duplicate_tile,
                 on_move=move,
                 on_change_tab=self.change_tile_tab,
                 tabs=all_tabs,
@@ -480,6 +484,14 @@ class Main(QMainWindow):
         tile.name, tile.url, tile.icon = name.strip(), url.strip(), icon
         self.cfg.save()
         self.rebuild()
+
+    def duplicate_tile(self, tile: Tile) -> None:
+        new_tile = replace(tile)
+        idx = self.cfg.tiles.index(tile)
+        self.cfg.tiles.insert(idx + 1, new_tile)
+        self.cfg.save()
+        self.rebuild()
+        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tile.tab))
 
     def remove_tile(self, tile: Tile) -> None:
         ok = QMessageBox.warning(
