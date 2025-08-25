@@ -11,6 +11,7 @@ import sys
 import webbrowser
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
@@ -64,6 +65,19 @@ CFG_DIR, ICON_DIR = app_dirs()
 CFG_PATH = CFG_DIR / "config.json"
 
 
+def available_browsers() -> list[str]:
+    """Return a list of locally available browser names."""
+    try_order: Iterable[str] = getattr(webbrowser, "_tryorder", [])
+    browsers: list[str] = []
+    for name in try_order:
+        try:
+            webbrowser.get(name)
+        except webbrowser.Error:
+            continue
+        browsers.append(name)
+    return browsers
+
+
 @dataclass
 class Tile:
     name: str
@@ -71,6 +85,7 @@ class Tile:
     tab: str = "Main"
     icon: Optional[str] = None  # path to png/ico
     bg: str = "#F5F6FA"  # background color (CSS)
+    browser: Optional[str] = None  # webbrowser name
 
 
 @dataclass
@@ -413,7 +428,13 @@ class Main(QMainWindow):
 
     # -------- actions --------
     def open_tile(self, tile: Tile) -> None:
-        webbrowser.open(tile.url)  # default browser
+        try:
+            if tile.browser:
+                webbrowser.get(tile.browser).open(tile.url)
+            else:
+                webbrowser.open(tile.url)
+        except webbrowser.Error:
+            webbrowser.open(tile.url)
 
     def move_tile(self, tab: str, from_idx: int, to_idx: int) -> None:
         if from_idx == to_idx:
@@ -450,8 +471,25 @@ class Main(QMainWindow):
         )
         if not ok or not tab:
             tab = "Main"
+        browsers = ["Default"] + available_browsers()
+        browser_choice, ok = QInputDialog.getItem(
+            self,
+            "Browser",
+            "Browser:",
+            browsers,
+            0,
+            False,
+        )
+        browser_sel = None if not ok or browser_choice == "Default" else browser_choice
         self.cfg.tiles.append(
-            Tile(name=name.strip(), url=url.strip(), icon=icon, bg=bg, tab=tab)
+            Tile(
+                name=name.strip(),
+                url=url.strip(),
+                icon=icon,
+                bg=bg,
+                tab=tab,
+                browser=browser_sel,
+            )
         )
         self.cfg.save()
         self.rebuild()
@@ -464,6 +502,20 @@ class Main(QMainWindow):
         url, ok = QInputDialog.getText(self, "Edit tile", "URL:", text=tile.url)
         if not ok or not url.strip():
             return
+
+        browsers = ["Default"] + available_browsers()
+        current_browser = tile.browser if tile.browser else "Default"
+        browser_choice, ok = QInputDialog.getItem(
+            self,
+            "Browser",
+            "Browser:",
+            browsers,
+            browsers.index(current_browser) if current_browser in browsers else 0,
+            False,
+        )
+        if not ok:
+            browser_choice = current_browser
+        browser_sel = None if browser_choice == "Default" else browser_choice
 
         # optional: change icon file
         change_icon = QMessageBox.question(
@@ -481,7 +533,12 @@ class Main(QMainWindow):
             if path:
                 icon = path
 
-        tile.name, tile.url, tile.icon = name.strip(), url.strip(), icon
+        tile.name, tile.url, tile.icon, tile.browser = (
+            name.strip(),
+            url.strip(),
+            icon,
+            browser_sel,
+        )
         self.cfg.save()
         self.rebuild()
 
