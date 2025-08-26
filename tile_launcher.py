@@ -11,6 +11,7 @@ import sys
 import webbrowser
 import urllib.parse
 import urllib.request
+import shutil
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -65,17 +66,76 @@ CFG_DIR, ICON_DIR = app_dirs()
 CFG_PATH = CFG_DIR / "config.json"
 
 
+def _register_brave() -> None:
+    """Register the Brave browser if it is installed.
+
+    The ``webbrowser`` module does not ship with a Brave entry by default, so
+    this helper checks a few common installation locations and registers one if
+    found.  The registration is idempotent and inexpensive when Brave is not
+    installed.
+    """
+
+    if "brave" in getattr(
+        webbrowser, "_browsers", {}
+    ):  # pragma: no cover - trivial guard
+        return
+
+    path: Optional[str] = None
+    if sys.platform.startswith("win"):
+        candidates = [
+            Path(os.getenv("PROGRAMFILES", ""))
+            / "BraveSoftware/Brave-Browser/Application/brave.exe",
+            Path(os.getenv("PROGRAMFILES(X86)", ""))
+            / "BraveSoftware/Brave-Browser/Application/brave.exe",
+        ]
+        for c in candidates:
+            if c.exists():
+                path = str(c)
+                break
+    elif sys.platform == "darwin":
+        mac_path = Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
+        if mac_path.exists():
+            path = str(mac_path)
+    else:
+        path = shutil.which("brave") or shutil.which("brave-browser")
+
+    if path:
+        webbrowser.register("brave", None, webbrowser.BackgroundBrowser(path))
+
+
 def available_browsers() -> list[str]:
-    """Return a list of locally available browser names."""
-    try_order: Iterable[str] = getattr(webbrowser, "_tryorder", [])
+    """Return a list of locally available browser names.
+
+    In addition to the browsers detected by :mod:`webbrowser`, this probes a
+    list of common browsers (Brave, Firefox, Safari, etc.) so that installed
+    browsers that are not part of ``webbrowser._tryorder`` still appear in the
+    selection list.
+    """
+
+    common = [
+        "brave",
+        "brave-browser",
+        "chrome",
+        "chromium",
+        "edge",
+        "firefox",
+        "mozilla",
+        "opera",
+        "safari",
+        "vivaldi",
+    ]
+
+    names = list(dict.fromkeys(getattr(webbrowser, "_tryorder", []) + common))
     browsers: list[str] = []
-    for name in try_order:
+    for name in names:
         try:
+            if name.startswith("brave"):
+                _register_brave()
             webbrowser.get(name)
         except webbrowser.Error:
             continue
         browsers.append(name)
-    return browsers
+    return sorted(set(browsers))
 
 
 @dataclass
