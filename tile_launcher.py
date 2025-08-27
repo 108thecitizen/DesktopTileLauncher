@@ -15,6 +15,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
+import shutil
 
 from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import (
@@ -65,6 +66,19 @@ CFG_DIR, ICON_DIR = app_dirs()
 CFG_PATH = CFG_DIR / "config.json"
 
 
+def _find_browser(paths: Iterable[Path | str]) -> str | None:
+    """Return first existing executable from a list of candidate paths."""
+    for entry in paths:
+        if isinstance(entry, Path):
+            if entry.exists():
+                return str(entry)
+        else:
+            found = shutil.which(entry)
+            if found:
+                return found
+    return None
+
+
 def available_browsers() -> list[str]:
     """Return a list of locally available browser names."""
     try_order: Iterable[str] = getattr(webbrowser, "_tryorder", [])
@@ -75,7 +89,55 @@ def available_browsers() -> list[str]:
         except webbrowser.Error:
             continue
         browsers.append(name)
-    return browsers
+
+    candidates: dict[str, list[Path | str]] = {
+        "brave": [
+            "brave",
+            "brave-browser",
+            Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            Path("C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe"),
+            Path(
+                "C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"
+            ),
+        ],
+        "firefox": [
+            "firefox",
+            Path("/Applications/Firefox.app/Contents/MacOS/firefox"),
+            Path("C:/Program Files/Mozilla Firefox/firefox.exe"),
+            Path("C:/Program Files (x86)/Mozilla Firefox/firefox.exe"),
+        ],
+        "chrome": [
+            "chrome",
+            "google-chrome",
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+        ],
+        "edge": [
+            "msedge",
+            "microsoft-edge",
+            Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+            Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+        ],
+        "safari": [
+            Path("/Applications/Safari.app/Contents/MacOS/Safari"),
+        ],
+    }
+
+    for name, paths in candidates.items():
+        if name in browsers:
+            continue
+        try:
+            webbrowser.get(name)
+        except webbrowser.Error:
+            exe = _find_browser(paths)
+            if not exe:
+                continue
+            webbrowser.register(name, None, webbrowser.BackgroundBrowser(exe))
+        browsers.append(name)
+
+    return sorted(set(browsers))
 
 
 @dataclass
