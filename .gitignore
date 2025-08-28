@@ -379,3 +379,7 @@ FodyWeavers.xsd
 
 # local workflow backups
 .github/workflows/*.bk
+*.patch
+*.rej
+*.bak
+run_local.py
