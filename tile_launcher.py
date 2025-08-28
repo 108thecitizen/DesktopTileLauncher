@@ -82,18 +82,23 @@ def available_browsers() -> list[str]:
     """
     Return a list of locally available browser names.
 
-    Robust to environments where webbrowser._tryorder is None.
-    Always returns a list (possibly empty).
+    Robust to environments where webbrowser._tryorder is None and to
+    cross‑platform path quirks. Always returns a list (possibly empty).
     """
     _raw = getattr(webbrowser, "_tryorder", None)
     try_order: Iterable[str] = _raw if isinstance(_raw, (list, tuple, set)) else []
+    seen: set[str] = set()
     browsers: list[str] = []
+
+    # Include any working controllers that stdlib already knows about.
     for name in try_order:
         try:
             webbrowser.get(name)
         except webbrowser.Error:
             continue
-        browsers.append(name)
+        if name not in seen:
+            browsers.append(name)
+            seen.add(name)
 
     candidates: dict[str, list[Path | str]] = {
         "brave": [
@@ -101,9 +106,7 @@ def available_browsers() -> list[str]:
             "brave-browser",
             Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
             Path("C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe"),
-            Path(
-                "C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"
-            ),
+            Path("C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"),
         ],
         "firefox": [
             "firefox",
@@ -131,18 +134,32 @@ def available_browsers() -> list[str]:
     }
 
     for name, paths in candidates.items():
-        if name in browsers:
+        if name in seen:
             continue
+        ok = True
         try:
             webbrowser.get(name)
         except webbrowser.Error:
-            exe = _find_browser(paths)
-            if not exe:
-                continue
-            webbrowser.register(name, None, webbrowser.BackgroundBrowser(exe))
-        browsers.append(name)
+            ok = False
 
-    return sorted(set(browsers))
+        if not ok:
+            exe = _find_browser(paths)
+            if exe:
+                webbrowser.register(name, None, webbrowser.BackgroundBrowser(exe))
+                ok = True
+
+        # On macOS, Safari is a standard system browser; ensure it's present.
+        if not ok and sys.platform == "darwin" and name == "safari":
+            safari_exe = "/Applications/Safari.app/Contents/MacOS/Safari"
+            webbrowser.register("safari", None, webbrowser.BackgroundBrowser(safari_exe))
+            ok = True
+
+        if ok and name not in seen:
+            browsers.append(name)
+            seen.add(name)
+
+    return sorted(browsers)
+
 
 
 def _normalize_url(raw: str) -> str:
