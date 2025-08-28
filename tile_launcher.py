@@ -1,9 +1,8 @@
-# tile_launcher.py
+﻿# tile_launcher.py
 # Minimal desktop launcher: tile grid that opens URLs in the default browser.
 # Windows/Mac/Linux.  Requires: Python 3.10+  pip install PySide6
 # encoding changed
 # SPDX-License-Identifier: MIT
-
 
 import json
 import os
@@ -52,7 +51,7 @@ def app_dirs():
     if sys.platform.startswith("win"):
         base = Path(os.getenv("APPDATA", str(Path.home() / "AppData/Roaming")))
     elif sys.platform == "darwin":
-        base = Path.home() / "Library/Application Support"
+        base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))
     cfg = base / APP_NAME
@@ -80,8 +79,14 @@ def _find_browser(paths: Iterable[Path | str]) -> str | None:
 
 
 def available_browsers() -> list[str]:
-    """Return a list of locally available browser names."""
-    try_order: Iterable[str] = getattr(webbrowser, "_tryorder", [])
+    """
+    Return a list of locally available browser names.
+
+    Robust to environments where webbrowser._tryorder is None.
+    Always returns a list (possibly empty).
+    """
+    _raw = getattr(webbrowser, "_tryorder", None)
+    try_order: Iterable[str] = _raw if isinstance(_raw, (list, tuple, set)) else []
     browsers: list[str] = []
     for name in try_order:
         try:
@@ -96,9 +101,7 @@ def available_browsers() -> list[str]:
             "brave-browser",
             Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
             Path("C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe"),
-            Path(
-                "C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"
-            ),
+            Path("C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"),
         ],
         "firefox": [
             "firefox",
@@ -140,6 +143,15 @@ def available_browsers() -> list[str]:
     return sorted(set(browsers))
 
 
+def _normalize_url(raw: str) -> str:
+    """Ensure the URL has a scheme; if missing, prepend https://."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    parsed = urllib.parse.urlparse(s)
+    return s if parsed.scheme else f"https://{s}"
+
+
 @dataclass
 class Tile:
     name: str
@@ -173,7 +185,7 @@ class LauncherConfig:
                 tiles=tiles,
                 tabs=tabs,
             )
-        # first run ï¿½ create a friendly default
+        # first run – create a friendly default
         cfg = LauncherConfig(
             title="My Launcher",
             columns=5,
@@ -325,9 +337,7 @@ class TileButton(QToolButton):
         if self._drag_start_pos is None:
             super().mouseMoveEvent(event)
             return
-        if (
-            event.position().toPoint() - self._drag_start_pos
-        ).manhattanLength() < QApplication.startDragDistance():
+        if (event.position().toPoint() - self._drag_start_pos).manhattanLength() < QApplication.startDragDistance():
             return
         drag = QDrag(self)
         mime = QMimeData()
@@ -517,6 +527,7 @@ class Main(QMainWindow):
         url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://…):")
         if not ok or not url.strip():
             return
+        url = _normalize_url(url)
 
         # try to fetch a favicon automatically
         icon_path = fetch_favicon(url)
@@ -533,7 +544,8 @@ class Main(QMainWindow):
         )
         if not ok or not tab:
             tab = "Main"
-        browsers = ["Default"] + available_browsers()
+        # Always include a safe first option; detection may return []
+        browsers = ["Default"] + (available_browsers() or [])
         browser_choice, ok = QInputDialog.getItem(
             self,
             "Browser",
@@ -546,7 +558,7 @@ class Main(QMainWindow):
         self.cfg.tiles.append(
             Tile(
                 name=name.strip(),
-                url=url.strip(),
+                url=url,  # already normalized
                 icon=icon,
                 bg=bg,
                 tab=tab,
@@ -564,8 +576,9 @@ class Main(QMainWindow):
         url, ok = QInputDialog.getText(self, "Edit tile", "URL:", text=tile.url)
         if not ok or not url.strip():
             return
+        url = _normalize_url(url)
 
-        browsers = ["Default"] + available_browsers()
+        browsers = ["Default"] + (available_browsers() or [])
         current_browser = tile.browser if tile.browser else "Default"
         browser_choice, ok = QInputDialog.getItem(
             self,
@@ -597,7 +610,7 @@ class Main(QMainWindow):
 
         tile.name, tile.url, tile.icon, tile.browser = (
             name.strip(),
-            url.strip(),
+            url,  # already normalized
             icon,
             browser_sel,
         )
@@ -637,9 +650,7 @@ class Main(QMainWindow):
             return
         name = name.strip()
         if name in self.cfg.tabs:
-            QMessageBox.warning(
-                self, "Tab exists", "A tab with that name exists already."
-            )
+            QMessageBox.warning(self, "Tab exists", "A tab with that name exists already.")
             return
         self.cfg.tabs.append(name)
         self.cfg.save()
@@ -656,9 +667,7 @@ class Main(QMainWindow):
             return
         name = name.strip()
         if name in self.cfg.tabs:
-            QMessageBox.warning(
-                self, "Tab exists", "A tab with that name exists already."
-            )
+            QMessageBox.warning(self, "Tab exists", "A tab with that name exists already.")
             return
         idx = self.cfg.tabs.index(current)
         self.cfg.tabs[idx] = name
