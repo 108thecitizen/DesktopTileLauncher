@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional
 import shutil
+import logging
 
 from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import (
@@ -64,6 +65,8 @@ def app_dirs():
 
 CFG_DIR, ICON_DIR = app_dirs()
 CFG_PATH = CFG_DIR / "config.json"
+
+logger = logging.getLogger(__name__)
 
 
 def _find_browser(paths: Iterable[Path | str]) -> str | None:
@@ -420,7 +423,8 @@ class Main(QMainWindow):
 
         cols = max(1, int(self.cfg.columns))
         r = c = 0
-        tab_tiles = [t for t in self.cfg.tiles if t.tab == tab]
+        tab_tiles = [t for t in self.cfg.tiles if t.tab.lower() == tab.lower()]
+        logger.debug("Populating tab %s with %d tiles", tab, len(tab_tiles))
         all_tabs = list(self.cfg.tabs)
         for idx, tile in enumerate(tab_tiles):
 
@@ -488,6 +492,12 @@ class Main(QMainWindow):
             return "Main"
         return self.tabs_widget.tabText(idx)
 
+    def _canonical_tab(self, name: str) -> str:
+        for t in self.cfg.tabs:
+            if t.lower() == name.lower():
+                return t
+        return name
+
     # -------- actions --------
     def open_tile(self, tile: Tile) -> None:
         try:
@@ -509,6 +519,16 @@ class Main(QMainWindow):
         self.cfg.tiles.insert(insert_at, tile)
         self.cfg.save()
         self._populate_tab(tab)
+
+    def add_tile_record(self, tile: Tile) -> None:
+        tab = self._canonical_tab(tile.tab)
+        tile.tab = tab
+        logger.info("Adding tile %s to tab %s", tile.name, tab)
+        self.cfg.tiles.append(tile)
+        self.cfg.save()
+        self._populate_tab(tab)
+        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tab))
+        self.resize_to_fit_tiles()
 
     def add_tile(self) -> None:
         name, ok = QInputDialog.getText(self, "Tile name", "Name:")
@@ -533,6 +553,7 @@ class Main(QMainWindow):
         )
         if not ok or not tab:
             tab = "Main"
+        tab = self._canonical_tab(tab.strip())
         browsers = ["Default"] + available_browsers()
         browser_choice, ok = QInputDialog.getItem(
             self,
@@ -543,19 +564,15 @@ class Main(QMainWindow):
             False,
         )
         browser_sel = None if not ok or browser_choice == "Default" else browser_choice
-        self.cfg.tiles.append(
-            Tile(
-                name=name.strip(),
-                url=url.strip(),
-                icon=icon,
-                bg=bg,
-                tab=tab,
-                browser=browser_sel,
-            )
+        new_tile = Tile(
+            name=name.strip(),
+            url=url.strip(),
+            icon=icon,
+            bg=bg,
+            tab=tab,
+            browser=browser_sel,
         )
-        self.cfg.save()
-        self.rebuild()
-        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tab))
+        self.add_tile_record(new_tile)
 
     def edit_tile(self, tile: Tile) -> None:
         name, ok = QInputDialog.getText(self, "Edit tile", "Name:", text=tile.name)
