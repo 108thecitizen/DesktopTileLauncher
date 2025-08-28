@@ -1,0 +1,99 @@
+--- a/tile_launcher.py
++++ b/tile_launcher.py
+@@ -70,9 +70,14 @@ def _find_browser(paths: Iterable[Path | str]) -> str | None:
+     return None
+ 
+ 
+-def available_browsers() -> list[str]:
+-    """Return a list of locally available browser names."""
+-    try_order: Iterable[str] = getattr(webbrowser, "_tryorder", [])
++def available_browsers() -> list[str]:
++    """
++    Return a list of locally available browser names.
++    Robust to environments where webbrowser._tryorder is None.
++    Always returns a list (possibly empty).
++    """
++    _raw = getattr(webbrowser, "_tryorder", None)
++    try_order: Iterable[str] = _raw if isinstance(_raw, (list, tuple, set)) else []
+     browsers: list[str] = []
+     for name in try_order:
+         try:
+@@ -134,6 +139,15 @@ def available_browsers() -> list[str]:
+ 
+     return sorted(set(browsers))
+ 
++
++def _normalize_url(raw: str) -> str:
++    """Ensure the URL has a scheme; if missing, prepend https://."""
++    s = (raw or "").strip()
++    if not s:
++        return ""
++    parsed = urllib.parse.urlparse(s)
++    return s if parsed.scheme else f"https://{s}"
++
+ 
+ @dataclass
+ class Tile:
+@@ -345,11 +359,12 @@ class Main(QMainWindow):
+         name, ok = QInputDialog.getText(self, "Tile name", "Name:")
+         if not ok or not name.strip():
+             return
+         url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://…):")
+         if not ok or not url.strip():
+             return
++        url = _normalize_url(url)
+ 
+         # try to fetch a favicon automatically
+-        icon_path = fetch_favicon(url)
++        icon_path = fetch_favicon(url)
+         icon = str(icon_path) if icon_path else None
+ 
+         bg = "#F5F6FA"
+@@ -363,7 +378,7 @@ class Main(QMainWindow):
+         )
+         if not ok or not tab:
+             tab = "Main"
+-        browsers = ["Default"] + available_browsers()
++        browsers = ["Default"] + (available_browsers() or [])
+         browser_choice, ok = QInputDialog.getItem(
+             self,
+             "Browser",
+@@ -375,12 +390,12 @@ class Main(QMainWindow):
+             False,
+         )
+         browser_sel = None if not ok or browser_choice == "Default" else browser_choice
+         self.cfg.tiles.append(
+             Tile(
+                 name=name.strip(),
+-                url=url.strip(),
++                url=url,  # already normalized
+                 icon=icon,
+                 bg=bg,
+                 tab=tab,
+                 browser=browser_sel,
+             )
+         )
+@@ -391,11 +406,12 @@ class Main(QMainWindow):
+     def edit_tile(self, tile: Tile) -> None:
+         name, ok = QInputDialog.getText(self, "Edit tile", "Name:", text=tile.name)
+         if not ok or not name.strip():
+             return
+         url, ok = QInputDialog.getText(self, "Edit tile", "URL:", text=tile.url)
+         if not ok or not url.strip():
+             return
++        url = _normalize_url(url)
+ 
+-        browsers = ["Default"] + available_browsers()
++        browsers = ["Default"] + (available_browsers() or [])
+         current_browser = tile.browser if tile.browser else "Default"
+         browser_choice, ok = QInputDialog.getItem(
+             self,
+@@ -415,7 +431,7 @@ class Main(QMainWindow):
+ 
+         tile.name, tile.url, tile.icon, tile.browser = (
+             name.strip(),
+-            url.strip(),
++            url,  # already normalized
+             icon,
+             browser_sel,
+         )
