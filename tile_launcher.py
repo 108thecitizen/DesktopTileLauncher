@@ -32,16 +32,23 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
     QGridLayout,
+    QHBoxLayout,
     QInputDialog,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPushButton,
     QScrollArea,
     QTabWidget,
     QToolBar,
     QToolButton,
-    QFileDialog,
     QWidget,
 )
 
@@ -241,6 +248,73 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, ch)
     p.end()
     return QIcon(pix)
+
+
+class TileDialog(QDialog):
+    def __init__(
+        self, parent: QWidget, tabs: list[str], tile: Tile | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Tile" if tile else "Add Tile")
+        layout = QFormLayout(self)
+
+        self.name_edit = QLineEdit(self)
+        self.url_edit = QLineEdit(self)
+        self.tab_combo = QComboBox(self)
+        self.tab_combo.addItems(tabs)
+        self.browser_combo = QComboBox(self)
+        self.browser_combo.addItem("Default")
+        for b in available_browsers():
+            self.browser_combo.addItem(b)
+
+        self.icon_edit = QLineEdit(self)
+        browse_btn = QPushButton("Browse…", self)
+        browse_btn.clicked.connect(self._choose_icon)
+        icon_layout = QHBoxLayout()
+        icon_layout.addWidget(self.icon_edit)
+        icon_layout.addWidget(browse_btn)
+
+        layout.addRow("Name:", self.name_edit)
+        layout.addRow("URL:", self.url_edit)
+        layout.addRow("Tab:", self.tab_combo)
+        layout.addRow("Browser:", self.browser_combo)
+        layout.addRow("Icon:", icon_layout)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+        if tile:
+            self.name_edit.setText(tile.name)
+            self.url_edit.setText(tile.url)
+            if tile.icon:
+                self.icon_edit.setText(tile.icon)
+            tab_idx = tabs.index(tile.tab) if tile.tab in tabs else 0
+            self.tab_combo.setCurrentIndex(tab_idx)
+            current_browser = tile.browser if tile.browser else "Default"
+            idx = self.browser_combo.findText(current_browser)
+            if idx >= 0:
+                self.browser_combo.setCurrentIndex(idx)
+
+    def _choose_icon(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose icon (png/ico)", str(ICON_DIR), "Images (*.png *.ico)"
+        )
+        if path:
+            self.icon_edit.setText(path)
+
+    def values(self) -> tuple[str, str, str, Optional[str], Optional[str]]:
+        name = self.name_edit.text().strip()
+        url = self.url_edit.text().strip()
+        icon_path = self.icon_edit.text().strip()
+        icon = icon_path if icon_path else None
+        tab = self.tab_combo.currentText()
+        browser_text = self.browser_combo.currentText()
+        browser = None if browser_text == "Default" else browser_text
+        return name, url, tab, icon, browser
 
 
 class TileButton(QToolButton):
@@ -511,42 +585,20 @@ class Main(QMainWindow):
         self._populate_tab(tab)
 
     def add_tile(self) -> None:
-        name, ok = QInputDialog.getText(self, "Tile name", "Name:")
-        if not ok or not name.strip():
+        dlg = TileDialog(self, self.cfg.tabs)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://…):")
-        if not ok or not url.strip():
+        name, url, tab, icon, browser_sel = dlg.values()
+        if not name or not url:
             return
-
-        # try to fetch a favicon automatically
-        icon_path = fetch_favicon(url)
-        icon = str(icon_path) if icon_path else None
-
+        if not icon:
+            icon_path = fetch_favicon(url)
+            icon = str(icon_path) if icon_path else None
         bg = "#F5F6FA"
-        tab, ok = QInputDialog.getItem(
-            self,
-            "Assign Tab",
-            "Tab:",
-            self.cfg.tabs,
-            0,
-            False,
-        )
-        if not ok or not tab:
-            tab = "Main"
-        browsers = ["Default"] + available_browsers()
-        browser_choice, ok = QInputDialog.getItem(
-            self,
-            "Browser",
-            "Browser:",
-            browsers,
-            0,
-            False,
-        )
-        browser_sel = None if not ok or browser_choice == "Default" else browser_choice
         self.cfg.tiles.append(
             Tile(
-                name=name.strip(),
-                url=url.strip(),
+                name=name,
+                url=url,
                 icon=icon,
                 bg=bg,
                 tab=tab,
@@ -558,51 +610,23 @@ class Main(QMainWindow):
         self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tab))
 
     def edit_tile(self, tile: Tile) -> None:
-        name, ok = QInputDialog.getText(self, "Edit tile", "Name:", text=tile.name)
-        if not ok or not name.strip():
+        dlg = TileDialog(self, self.cfg.tabs, tile)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        url, ok = QInputDialog.getText(self, "Edit tile", "URL:", text=tile.url)
-        if not ok or not url.strip():
+        name, url, tab, icon, browser_sel = dlg.values()
+        if not name or not url:
             return
-
-        browsers = ["Default"] + available_browsers()
-        current_browser = tile.browser if tile.browser else "Default"
-        browser_choice, ok = QInputDialog.getItem(
-            self,
-            "Browser",
-            "Browser:",
-            browsers,
-            browsers.index(current_browser) if current_browser in browsers else 0,
-            False,
-        )
-        if not ok:
-            browser_choice = current_browser
-        browser_sel = None if browser_choice == "Default" else browser_choice
-
-        # optional: change icon file
-        change_icon = QMessageBox.question(
-            self,
-            "Icon",
-            "Change icon file?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        icon = tile.icon
-        if change_icon == QMessageBox.StandardButton.Yes:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Choose icon (png/ico)", str(ICON_DIR), "Images (*.png *.ico)"
-            )
-            if path:
-                icon = path
-
-        tile.name, tile.url, tile.icon, tile.browser = (
-            name.strip(),
-            url.strip(),
-            icon,
-            browser_sel,
-        )
+        if not icon:
+            icon_path = fetch_favicon(url)
+            icon = str(icon_path) if icon_path else None
+        tile.name = name
+        tile.url = url
+        tile.icon = icon
+        tile.browser = browser_sel
+        tile.tab = tab
         self.cfg.save()
         self.rebuild()
+        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tab))
 
     def duplicate_tile(self, tile: Tile) -> None:
         new_tile = replace(tile)
