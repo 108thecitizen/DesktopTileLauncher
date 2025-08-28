@@ -6,6 +6,7 @@
 
 
 import json
+import logging
 import os
 import sys
 import webbrowser
@@ -194,7 +195,9 @@ class LauncherConfig:
             "tiles": [asdict(t) for t in self.tiles],
             "tabs": self.tabs,
         }
-        CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp = CFG_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(CFG_PATH)
 
 
 def guess_domain(url: str) -> str:
@@ -203,6 +206,14 @@ def guess_domain(url: str) -> str:
         return netloc.split("@")[-1]  # strip creds if any
     except Exception:
         return ""
+
+
+def normalize_url(url: str) -> str:
+    """Ensure the URL has a scheme; default to https if missing."""
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.scheme:
+        return "https://" + url
+    return url
 
 
 def fetch_favicon(url: str, size: int = 128) -> Optional[Path]:
@@ -510,19 +521,59 @@ class Main(QMainWindow):
         self.cfg.save()
         self._populate_tab(tab)
 
-    def add_tile(self) -> None:
-        name, ok = QInputDialog.getText(self, "Tile name", "Name:")
-        if not ok or not name.strip():
-            return
-        url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://…):")
-        if not ok or not url.strip():
-            return
+    def add_tile_data(
+        self,
+        name: str,
+        url: str,
+        tab: str,
+        browser: Optional[str] = None,
+    ) -> Tile:
+        """Create, persist, and render a new tile."""
+        name = (name or "").strip()
+        url = (url or "").strip()
+        tab = (tab or "").strip()
+        if not name:
+            raise ValueError("Name is required.")
+        if not url:
+            raise ValueError("URL is required.")
+        if not tab:
+            raise ValueError("Tab is required.")
 
-        # try to fetch a favicon automatically
+        url = normalize_url(url)
         icon_path = fetch_favicon(url)
         icon = str(icon_path) if icon_path else None
-
         bg = "#F5F6FA"
+        browser_sel = None
+        if browser and browser.lower() not in ("default", "system"):
+            browser_sel = browser
+
+        tile = Tile(
+            name=name,
+            url=url,
+            icon=icon,
+            bg=bg,
+            tab=tab,
+            browser=browser_sel,
+        )
+        self.cfg.tiles.append(tile)
+        try:
+            self.cfg.save()
+        except Exception as exc:  # pragma: no cover - rare
+            logging.exception("Failed to save config", exc_info=exc)
+            self.cfg.tiles.pop()
+            raise RuntimeError(f"Failed to save tile: {exc}") from exc
+
+        self.rebuild()
+        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tab))
+        return tile
+
+    def add_tile(self) -> None:
+        name, ok = QInputDialog.getText(self, "Tile name", "Name:")
+        if not ok:
+            return
+        url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://…):")
+        if not ok:
+            return
         tab, ok = QInputDialog.getItem(
             self,
             "Assign Tab",
@@ -531,8 +582,8 @@ class Main(QMainWindow):
             0,
             False,
         )
-        if not ok or not tab:
-            tab = "Main"
+        if not ok:
+            return
         browsers = ["Default"] + available_browsers()
         browser_choice, ok = QInputDialog.getItem(
             self,
@@ -542,20 +593,13 @@ class Main(QMainWindow):
             0,
             False,
         )
-        browser_sel = None if not ok or browser_choice == "Default" else browser_choice
-        self.cfg.tiles.append(
-            Tile(
-                name=name.strip(),
-                url=url.strip(),
-                icon=icon,
-                bg=bg,
-                tab=tab,
-                browser=browser_sel,
-            )
-        )
-        self.cfg.save()
-        self.rebuild()
-        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tab))
+        browser_sel = browser_choice if (ok and browser_choice != "Default") else None
+        try:
+            self.add_tile_data(name, url, tab, browser_sel)
+        except ValueError as exc:
+            QMessageBox.critical(self, "Validation error", str(exc))
+        except RuntimeError as exc:  # pragma: no cover - unlikely
+            QMessageBox.critical(self, "Error", str(exc))
 
     def edit_tile(self, tile: Tile) -> None:
         name, ok = QInputDialog.getText(self, "Edit tile", "Name:", text=tile.name)

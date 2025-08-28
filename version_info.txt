@@ -6,11 +6,11 @@ VSVersionInfo(
     StringFileInfo([
       StringTable('040904B0', [
         StringStruct('FileDescription', 'DesktopTileLauncher'),
-        StringStruct('FileVersion', '0.1.0'),
+        StringStruct('FileVersion', '0.1.1'),
         StringStruct('InternalName', 'DesktopTileLauncher'),
         StringStruct('OriginalFilename', 'DesktopTileLauncher.exe'),
         StringStruct('ProductName', 'DesktopTileLauncher'),
-        StringStruct('ProductVersion', '0.1.0'),
+        StringStruct('ProductVersion', '0.1.1'),
         StringStruct('CompanyName', '108thecitizen'),
       ])
     ]),
