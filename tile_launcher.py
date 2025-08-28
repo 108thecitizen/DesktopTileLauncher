@@ -523,16 +523,20 @@ class Main(QMainWindow):
         icon = str(icon_path) if icon_path else None
 
         bg = "#F5F6FA"
+        current_tab = self.current_tab()
         tab, ok = QInputDialog.getItem(
             self,
             "Assign Tab",
             "Tab:",
             self.cfg.tabs,
-            0,
+            self.cfg.tabs.index(current_tab) if current_tab in self.cfg.tabs else 0,
             False,
         )
-        if not ok or not tab:
-            tab = "Main"
+        if not ok or not tab.strip():
+            tab = current_tab
+        else:
+            tab = tab.strip()
+
         browsers = ["Default"] + available_browsers()
         browser_choice, ok = QInputDialog.getItem(
             self,
