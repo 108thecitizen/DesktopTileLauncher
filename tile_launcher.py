@@ -4,7 +4,6 @@
 # encoding changed
 # SPDX-License-Identifier: MIT
 
-
 import json
 import os
 import sys
@@ -52,7 +51,7 @@ def app_dirs():
     if sys.platform.startswith("win"):
         base = Path(os.getenv("APPDATA", str(Path.home() / "AppData/Roaming")))
     elif sys.platform == "darwin":
-        base = Path.home() / "Library/Application Support"
+        base = Path.home() / "Library" / "Application Support"
     else:
         base = Path(os.getenv("XDG_CONFIG_HOME", str(Path.home() / ".config")))
     cfg = base / APP_NAME
@@ -80,15 +79,26 @@ def _find_browser(paths: Iterable[Path | str]) -> str | None:
 
 
 def available_browsers() -> list[str]:
-    """Return a list of locally available browser names."""
-    try_order: Iterable[str] = getattr(webbrowser, "_tryorder", [])
+    """
+    Return a list of locally available browser names.
+
+    Robust to environments where webbrowser._tryorder is None and to
+    cross‑platform path quirks. Always returns a list (possibly empty).
+    """
+    _raw = getattr(webbrowser, "_tryorder", None)
+    try_order: Iterable[str] = _raw if isinstance(_raw, (list, tuple, set)) else []
+    seen: set[str] = set()
     browsers: list[str] = []
+
+    # Include any working controllers that stdlib already knows about.
     for name in try_order:
         try:
             webbrowser.get(name)
         except webbrowser.Error:
             continue
-        browsers.append(name)
+        if name not in seen:
+            browsers.append(name)
+            seen.add(name)
 
     candidates: dict[str, list[Path | str]] = {
         "brave": [
@@ -126,18 +136,42 @@ def available_browsers() -> list[str]:
     }
 
     for name, paths in candidates.items():
-        if name in browsers:
+        if name in seen:
             continue
+        ok = True
         try:
             webbrowser.get(name)
         except webbrowser.Error:
-            exe = _find_browser(paths)
-            if not exe:
-                continue
-            webbrowser.register(name, None, webbrowser.BackgroundBrowser(exe))
-        browsers.append(name)
+            ok = False
 
-    return sorted(set(browsers))
+        if not ok:
+            exe = _find_browser(paths)
+            if exe:
+                webbrowser.register(name, None, webbrowser.BackgroundBrowser(exe))
+                ok = True
+
+        # On macOS, Safari is a standard system browser; ensure it's present.
+        if not ok and sys.platform == "darwin" and name == "safari":
+            safari_exe = "/Applications/Safari.app/Contents/MacOS/Safari"
+            webbrowser.register(
+                "safari", None, webbrowser.BackgroundBrowser(safari_exe)
+            )
+            ok = True
+
+        if ok and name not in seen:
+            browsers.append(name)
+            seen.add(name)
+
+    return sorted(browsers)
+
+
+def _normalize_url(raw: str) -> str:
+    """Ensure the URL has a scheme; if missing, prepend https://."""
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    parsed = urllib.parse.urlparse(s)
+    return s if parsed.scheme else f"https://{s}"
 
 
 @dataclass
@@ -173,7 +207,7 @@ class LauncherConfig:
                 tiles=tiles,
                 tabs=tabs,
             )
-        # first run ï¿½ create a friendly default
+        # first run – create a friendly default
         cfg = LauncherConfig(
             title="My Launcher",
             columns=5,
@@ -517,6 +551,7 @@ class Main(QMainWindow):
         url, ok = QInputDialog.getText(self, "Tile URL", "URL (https://…):")
         if not ok or not url.strip():
             return
+        url = _normalize_url(url)
 
         # try to fetch a favicon automatically
         icon_path = fetch_favicon(url)
@@ -533,7 +568,8 @@ class Main(QMainWindow):
         )
         if not ok or not tab:
             tab = "Main"
-        browsers = ["Default"] + available_browsers()
+        # Always include a safe first option; detection may return []
+        browsers = ["Default"] + (available_browsers() or [])
         browser_choice, ok = QInputDialog.getItem(
             self,
             "Browser",
@@ -546,7 +582,7 @@ class Main(QMainWindow):
         self.cfg.tiles.append(
             Tile(
                 name=name.strip(),
-                url=url.strip(),
+                url=url,  # already normalized
                 icon=icon,
                 bg=bg,
                 tab=tab,
@@ -564,8 +600,9 @@ class Main(QMainWindow):
         url, ok = QInputDialog.getText(self, "Edit tile", "URL:", text=tile.url)
         if not ok or not url.strip():
             return
+        url = _normalize_url(url)
 
-        browsers = ["Default"] + available_browsers()
+        browsers = ["Default"] + (available_browsers() or [])
         current_browser = tile.browser if tile.browser else "Default"
         browser_choice, ok = QInputDialog.getItem(
             self,
@@ -597,7 +634,7 @@ class Main(QMainWindow):
 
         tile.name, tile.url, tile.icon, tile.browser = (
             name.strip(),
-            url.strip(),
+            url,  # already normalized
             icon,
             browser_sel,
         )

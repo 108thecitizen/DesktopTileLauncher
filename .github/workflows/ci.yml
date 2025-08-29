@@ -27,4 +27,6 @@ jobs:
       - name: Type-check (mypy)
         run: mypy --ignore-missing-imports .
       - name: Tests
-        run: pytest -q
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q
