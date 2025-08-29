@@ -106,7 +106,9 @@ def available_browsers() -> list[str]:
             "brave-browser",
             Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
             Path("C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe"),
-            Path("C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"),
+            Path(
+                "C:/Program Files (x86)/BraveSoftware/Brave-Browser/Application/brave.exe"
+            ),
         ],
         "firefox": [
             "firefox",
@@ -151,7 +153,9 @@ def available_browsers() -> list[str]:
         # On macOS, Safari is a standard system browser; ensure it's present.
         if not ok and sys.platform == "darwin" and name == "safari":
             safari_exe = "/Applications/Safari.app/Contents/MacOS/Safari"
-            webbrowser.register("safari", None, webbrowser.BackgroundBrowser(safari_exe))
+            webbrowser.register(
+                "safari", None, webbrowser.BackgroundBrowser(safari_exe)
+            )
             ok = True
 
         if ok and name not in seen:
@@ -159,7 +163,6 @@ def available_browsers() -> list[str]:
             seen.add(name)
 
     return sorted(browsers)
-
 
 
 def _normalize_url(raw: str) -> str:
