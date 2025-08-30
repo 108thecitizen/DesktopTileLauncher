@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Optional
 import shutil
 
-from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer
+from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, qWarning
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -43,6 +43,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QWidget,
 )
+
+from debug_scaffold import install_debug_scaffold
 
 APP_NAME = "TileLauncher"
 
@@ -419,6 +421,10 @@ class Main(QMainWindow):
         tab_menu.addAction("Rename Tab", self.rename_tab)
         tab_menu.addAction("Delete Tab", self.delete_tab)
 
+        debug_menu = self.menuBar().addMenu("Debug")
+        debug_menu.addAction("Raise Exception", self._debug_raise)
+        debug_menu.addAction("Qt Warning", lambda: qWarning("test"))
+
         self.tabs_widget = QTabWidget()
         self.tabs_widget.currentChanged.connect(
             lambda _=0: QTimer.singleShot(0, self.resize_to_fit_tiles)
@@ -725,9 +731,13 @@ class Main(QMainWindow):
         self.cfg.save()
         self.rebuild()
 
+    def _debug_raise(self) -> None:
+        raise RuntimeError("Test exception")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    install_debug_scaffold(app, app_name="DesktopTileLauncher")
     mw = Main()
     mw.show()
     sys.exit(app.exec())
