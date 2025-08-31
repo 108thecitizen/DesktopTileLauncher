@@ -46,6 +46,11 @@ from PySide6.QtWidgets import (
 
 from debug_scaffold import install_debug_scaffold
 from tile_editor_dialog import TileEditorDialog
+from browser_chrome_win import (
+    is_windows_default_browser_chrome,
+    is_chrome_path,
+    launch_chrome_with_profile,
+)
 
 APP_NAME = "TileLauncher"
 
@@ -185,6 +190,7 @@ class Tile:
     icon: Optional[str] = None  # path to png/ico
     bg: str = "#F5F6FA"  # background color (CSS)
     browser: Optional[str] = None  # webbrowser name
+    chrome_profile: Optional[str] = None  # e.g. "Default", "Profile 1"
 
 
 @dataclass
@@ -225,10 +231,16 @@ class LauncherConfig:
         return cfg
 
     def save(self):
+        tiles = []
+        for t in self.tiles:
+            d = asdict(t)
+            if d.get("chrome_profile") is None:
+                d.pop("chrome_profile", None)
+            tiles.append(d)
         data = {
             "title": self.title,
             "columns": self.columns,
-            "tiles": [asdict(t) for t in self.tiles],
+            "tiles": tiles,
             "tabs": self.tabs,
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -384,6 +396,17 @@ class TileButton(QToolButton):
             event.acceptProposedAction()
 
 
+def _tile_uses_chrome(tile: Tile) -> bool:
+    """Return True if the given tile will launch using Google Chrome."""
+    if sys.platform != "win32":
+        return False
+    chosen = getattr(tile, "browser", None)
+    if chosen:
+        as_str = str(chosen)
+        return is_chrome_path(as_str) or "chrome" in as_str.lower()
+    return is_windows_default_browser_chrome()
+
+
 class Main(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -531,6 +554,13 @@ class Main(QMainWindow):
 
     # -------- actions --------
     def open_tile(self, tile: Tile) -> None:
+        profile = tile.chrome_profile
+        if profile and _tile_uses_chrome(tile):
+            if launch_chrome_with_profile(tile.url, profile):
+                return
+            qWarning(
+                f"Chrome not found or failed to launch with profile '{profile}'; falling back."
+            )
         try:
             if tile.browser:
                 webbrowser.get(tile.browser).open(tile.url)
@@ -569,6 +599,7 @@ class Main(QMainWindow):
                     bg="#F5F6FA",
                     tab=cast(str, data["tab"]),
                     browser=data["browser"],
+                    chrome_profile=data["chrome_profile"],
                 )
             )
             self.cfg.save()
@@ -593,6 +624,7 @@ class Main(QMainWindow):
             tile.icon = data["icon"]
             tile.tab = cast(str, data["tab"])
             tile.browser = data["browser"]
+            tile.chrome_profile = data["chrome_profile"]
             self.cfg.save()
             self.rebuild()
             self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tile.tab))
