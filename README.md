@@ -5,3 +5,12 @@
 
 
 License: MIT
+
+## Usage
+
+On Windows, selecting Google Chrome for a tile (or leaving the browser as
+Default when Chrome is the system default) reveals a **Chrome profile**
+dropdown. The list is populated from Chrome's local profile cache and includes
+entries like `Default`, `Profile 1`, or names from signed-in Google accounts.
+Choosing a profile pins the tile to that persona; select **None** to use
+Chrome's last-used profile.

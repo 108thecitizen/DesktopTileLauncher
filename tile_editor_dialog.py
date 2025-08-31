@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+# mypy: disable-error-code=unreachable
+
 import shutil
+import sys
 import urllib.parse
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
@@ -24,6 +27,12 @@ from PySide6.QtWidgets import (
 if TYPE_CHECKING:
     # Only for type hints; runtime import cycles avoided.
     from tile_launcher import Tile  # noqa: F401
+
+from browser_chrome_win import (
+    is_chrome_path,
+    is_windows_default_browser_chrome,
+    list_chrome_profiles,
+)
 
 
 def _normalize_url(raw: str) -> str:
@@ -100,6 +109,21 @@ class TileEditorDialog(QDialog):
                 self.browser_combo.setCurrentIndex(idx)
         form.addRow("Browser:", self.browser_combo)
 
+        self.chromeProfileLabel = QLabel("Chrome profile")
+        self.chromeProfileCombo = QComboBox()
+        self.chromeProfileCombo.addItem("None (use Chrome default)", "")
+        if sys.platform == "win32":
+            for dir_id, display in list_chrome_profiles():
+                self.chromeProfileCombo.addItem(display, dir_id)
+        self.chromeProfileLabel.setVisible(False)
+        self.chromeProfileCombo.setVisible(False)
+        form.addRow(self.chromeProfileLabel, self.chromeProfileCombo)
+
+        if tile and getattr(tile, "chrome_profile", None):
+            idx = self.chromeProfileCombo.findData(tile.chrome_profile)
+            if idx >= 0:
+                self.chromeProfileCombo.setCurrentIndex(idx)
+
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -112,6 +136,10 @@ class TileEditorDialog(QDialog):
 
         self.name_edit.textChanged.connect(self._update_ok)  # type: ignore[arg-type]
         self.url_edit.textChanged.connect(self._update_ok)  # type: ignore[arg-type]
+        self.browser_combo.currentIndexChanged.connect(
+            self._refresh_chrome_profile_visibility
+        )
+        self._refresh_chrome_profile_visibility()
 
     def _update_ok(self) -> None:
         ok_btn = self.button_box.button(QDialogButtonBox.StandardButton.Ok)
@@ -152,6 +180,21 @@ class TileEditorDialog(QDialog):
             self._icon_path = str(result)
             self._update_icon_preview()
 
+    def _is_effective_browser_chrome(self) -> bool:
+        """Return True if the dialog's browser selection resolves to Chrome."""
+        sel = self.browser_combo.currentText()
+        if sys.platform != "win32":
+            return False
+        if sel == "Default":
+            return is_windows_default_browser_chrome()
+        return is_chrome_path(sel) or "chrome" in sel.lower()
+
+    def _refresh_chrome_profile_visibility(self) -> None:
+        """Show or hide the Chrome profile widgets based on browser selection."""
+        is_chrome = self._is_effective_browser_chrome()
+        self.chromeProfileLabel.setVisible(is_chrome)
+        self.chromeProfileCombo.setVisible(is_chrome)
+
     def accept(self) -> None:  # noqa: D401
         name = self.name_edit.text().strip()
         url = _normalize_url(self.url_edit.text())
@@ -178,11 +221,15 @@ class TileEditorDialog(QDialog):
             except Exception:
                 icon = None
 
+        chrome_prof_data = self.chromeProfileCombo.currentData()
+        chrome_profile = str(chrome_prof_data) if chrome_prof_data else None
+
         self.data = {
             "name": name,
             "url": url,
             "tab": tab,
             "icon": icon,
             "browser": browser,
+            "chrome_profile": chrome_profile,
         }
         super().accept()
