@@ -1,8 +1,11 @@
-AGENTS.md — Python Quality Gates (Rules 6–8)
+AGENTS.md — Python Quality Gates (Rules 1–2, 6–8)
 
 Purpose. This repository uses AI-assisted code generation. This document binds any code‑generating agent (e.g., Codex) to the non‑negotiable quality gates for all Python work. Whenever the agent adds or edits Python code, it MUST ensure that the repository cleanly passes the checks below before considering the task complete.
 
 The Rules
+
+1) Never create a binary file.
+2) Ensure that repository changes always pass Bandit security checks by running `bandit -r .`.
 
 6) Ensure that all Python source would successfully pass mypy type checks.
 7) Ensure that all Python source would successfully pass Ruff lint checks.
@@ -10,13 +13,14 @@ The Rules
 
 Definition of Done for any change touching Python code:
 
+bandit -r .
 ruff format --check .
 ruff check .
 mypy .
 pytest
 
 
-All four commands must exit with code 0.
+All five commands must exit with code 0.
 
 Agent Operating Procedure
 
@@ -36,7 +40,7 @@ Use per‑module mypy overrides rather than global ignore_missing_imports = True
 
 Keep imports, naming, and structure Ruff‑friendly. Sort imports, remove unused code, prefer modern Python constructs, and keep cyclomatic complexity reasonable.
 
-Continuously run the gates. After generating or editing code, the agent must run the three commands above and iterate until they pass.
+Continuously run the gates. After generating or editing code, the agent must run the five commands above and iterate until they pass.
 
 Repository Configuration the Agent Should Maintain
 
@@ -187,6 +191,10 @@ Agent Checklist (before declaring a task “done”)
 
 Code compiles and runs.
 
+No binary files have been introduced into the repository.
+
+bandit -r . passes with zero findings.
+
 ruff format --check . passes.
 
 ruff check . passes with zero errors (and no broad, unjustified ignores).
@@ -197,4 +205,4 @@ Any added ignores or overrides are minimal, documented, and scoped.
 
 CI configuration and pre‑commit hooks are updated if the change requires it (e.g., new stubs).
 
-By contributing to this repository, any code‑generating agent agrees to follow Rules 6–8 above and to keep the repository in a state where these gates pass at all times.
+By contributing to this repository, any code‑generating agent agrees to follow Rules 1–2 and 6–8 above and to keep the repository in a state where these gates pass at all times.
