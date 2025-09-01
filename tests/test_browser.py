@@ -1,4 +1,5 @@
 import os
+import subprocess
 import webbrowser
 
 import pytest
@@ -10,38 +11,47 @@ from tile_launcher import Main, Tile  # noqa: E402
 
 
 def test_open_tile_uses_specific_browser(monkeypatch):
-    opened: dict[str, str] = {}
+    launched: dict[str, list[str]] = {}
 
-    class FakeBrowser:
-        def open(self, url: str) -> None:  # pragma: no cover - trivial
-            opened["browser"] = url
+    def fake_popen(cmd, close_fds=True):  # pragma: no cover - trivial
+        launched["cmd"] = cmd
 
-    def fake_get(name: str) -> FakeBrowser:
-        assert name == "firefox"
-        return FakeBrowser()
+        class P:
+            pass
 
-    monkeypatch.setattr(webbrowser, "get", fake_get)
+        return P()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
-        webbrowser, "open", lambda url: opened.setdefault("default", url)
+        webbrowser,
+        "get",
+        lambda name: pytest.fail("webbrowser.get should not be called"),
     )
 
     tile = Tile(name="t", url="http://example.com", browser="firefox")
     main = Main.__new__(Main)
     main.open_tile(tile)
-    assert opened == {"browser": "http://example.com"}
+    assert launched["cmd"][0] == "firefox"
+    assert "--new-tab" in launched["cmd"]
 
 
 def test_open_tile_uses_default_browser(monkeypatch):
     opened: dict[str, str] = {}
 
-    def fake_open(url: str) -> None:  # pragma: no cover - trivial
+    def fake_open(url: str, *, new: int = 0):  # pragma: no cover - trivial
         opened["default"] = url
 
-    def fake_get(name: str):  # pragma: no cover - trivial
-        raise AssertionError("get should not be called")
-
     monkeypatch.setattr(webbrowser, "open", fake_open)
-    monkeypatch.setattr(webbrowser, "get", fake_get)
+    monkeypatch.setattr(
+        webbrowser, "get", lambda name: pytest.fail("get should not be called")
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("Popen should not be called")
+        ),
+    )
 
     tile = Tile(name="t", url="http://example.com")
     main = Main.__new__(Main)
