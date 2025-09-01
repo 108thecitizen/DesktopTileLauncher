@@ -4,8 +4,11 @@
 # encoding changed
 # SPDX-License-Identifier: MIT
 
+from __future__ import annotations
+
 import json
 import os
+import subprocess
 import sys
 import webbrowser
 import urllib.parse
@@ -13,7 +16,7 @@ import urllib.request
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Optional, cast
+from typing import Callable, Literal, Optional, cast
 import shutil
 
 from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, qWarning
@@ -191,6 +194,7 @@ class Tile:
     bg: str = "#F5F6FA"  # background color (CSS)
     browser: Optional[str] = None  # webbrowser name
     chrome_profile: Optional[str] = None  # e.g. "Default", "Profile 1"
+    open_target: Literal["tab", "window"] = "tab"
 
 
 @dataclass
@@ -396,6 +400,56 @@ class TileButton(QToolButton):
             event.acceptProposedAction()
 
 
+@dataclass
+class LaunchPlan:
+    """Plan describing how a tile's URL should be opened."""
+
+    browser_name: str | None
+    open_target: Literal["tab", "window"]
+    profile: str | None
+    command: list[str] | None
+    controller: str | None
+    new: int | None
+
+
+def build_launch_plan(tile: Tile) -> LaunchPlan:
+    """Return the launch strategy for *tile*.
+
+    When falling back to :mod:`webbrowser`, ``new=1`` opens a new window and
+    ``new=2`` opens a new tab, per the standard library's semantics
+    (https://docs.python.org/3/library/webbrowser.html#webbrowser.open).
+    """
+
+    target = getattr(tile, "open_target", "tab")
+    if tile.browser:
+        lowered = tile.browser.lower()
+        if "chrome" in lowered or "edge" in lowered:
+            args = [tile.browser]
+            if tile.chrome_profile:
+                args.append(f"--profile-directory={tile.chrome_profile}")
+            if target == "window":
+                args.append("--new-window")
+            args.append(tile.url)
+            return LaunchPlan(
+                tile.browser, target, tile.chrome_profile, args, None, None
+            )
+        if "firefox" in lowered:
+            args = [
+                tile.browser,
+                "--new-window" if target == "window" else "--new-tab",
+                tile.url,
+            ]
+            return LaunchPlan(
+                tile.browser, target, tile.chrome_profile, args, None, None
+            )
+        new_flag = 1 if target == "window" else 2
+        return LaunchPlan(
+            tile.browser, target, tile.chrome_profile, None, tile.browser, new_flag
+        )
+    new_flag = 1 if target == "window" else 2
+    return LaunchPlan(None, target, tile.chrome_profile, None, "default", new_flag)
+
+
 def _tile_uses_chrome(tile: Tile) -> bool:
     """Return True if the given tile will launch using Google Chrome."""
     if sys.platform != "win32":
@@ -554,20 +608,32 @@ class Main(QMainWindow):
 
     # -------- actions --------
     def open_tile(self, tile: Tile) -> None:
+        plan = build_launch_plan(tile)
+        print(
+            f"launch: browser={plan.browser_name or 'default'}, "
+            f"open_target={plan.open_target}, profile={plan.profile}, "
+            f"command={plan.command}, controller={plan.controller}, new={plan.new}"
+        )
         profile = tile.chrome_profile
         if profile and _tile_uses_chrome(tile):
-            if launch_chrome_with_profile(tile.url, profile):
+            if launch_chrome_with_profile(tile.url, profile, tile.open_target):
                 return
             qWarning(
                 f"Chrome not found or failed to launch with profile '{profile}'; falling back."
             )
+        if plan.command:
+            try:
+                subprocess.Popen(plan.command, close_fds=True)
+                return
+            except OSError:
+                qWarning("Failed to launch command; falling back.")
         try:
-            if tile.browser:
-                webbrowser.get(tile.browser).open(tile.url)
+            if plan.controller and plan.controller != "default":
+                webbrowser.get(plan.controller).open(tile.url, new=plan.new or 0)
             else:
-                webbrowser.open(tile.url)
+                webbrowser.open(tile.url, new=plan.new or 0)
         except webbrowser.Error:
-            webbrowser.open(tile.url)
+            webbrowser.open(tile.url, new=plan.new or 0)
 
     def move_tile(self, tab: str, from_idx: int, to_idx: int) -> None:
         if from_idx == to_idx:
@@ -600,6 +666,7 @@ class Main(QMainWindow):
                     tab=cast(str, data["tab"]),
                     browser=data["browser"],
                     chrome_profile=data["chrome_profile"],
+                    open_target=cast(str, data["open_target"]),
                 )
             )
             self.cfg.save()
@@ -625,6 +692,7 @@ class Main(QMainWindow):
             tile.tab = cast(str, data["tab"])
             tile.browser = data["browser"]
             tile.chrome_profile = data["chrome_profile"]
+            tile.open_target = cast(str, data["open_target"])
             self.cfg.save()
             self.rebuild()
             self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tile.tab))

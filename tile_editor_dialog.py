@@ -109,6 +109,15 @@ class TileEditorDialog(QDialog):
                 self.browser_combo.setCurrentIndex(idx)
         form.addRow("Browser:", self.browser_combo)
 
+        self.open_target_combo = QComboBox()
+        self.open_target_combo.addItem("New tab in existing window", "tab")
+        self.open_target_combo.addItem("New browser window", "window")
+        if tile:
+            idx = self.open_target_combo.findData(getattr(tile, "open_target", "tab"))
+            if idx >= 0:
+                self.open_target_combo.setCurrentIndex(idx)
+        form.addRow("Open in:", self.open_target_combo)
+
         self.chromeProfileLabel = QLabel("Chrome profile")
         self.chromeProfileCombo = QComboBox()
         self.chromeProfileCombo.addItem("None (use Chrome default)", "")
@@ -224,6 +233,9 @@ class TileEditorDialog(QDialog):
         chrome_prof_data = self.chromeProfileCombo.currentData()
         chrome_profile = str(chrome_prof_data) if chrome_prof_data else None
 
+        open_target_data = self.open_target_combo.currentData()
+        open_target = str(open_target_data) if open_target_data else "tab"
+
         self.data = {
             "name": name,
             "url": url,
@@ -231,5 +243,6 @@ class TileEditorDialog(QDialog):
             "icon": icon,
             "browser": browser,
             "chrome_profile": chrome_profile,
+            "open_target": open_target,
         }
         super().accept()

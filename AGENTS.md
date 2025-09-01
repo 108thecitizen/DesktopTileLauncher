@@ -13,9 +13,10 @@ Definition of Done for any change touching Python code:
 ruff format --check .
 ruff check .
 mypy .
+pytest
 
 
-All three commands must exit with code 0.
+All four commands must exit with code 0.
 
 Agent Operating Procedure
 

@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import typing as t
+from typing import Literal
 
 if sys.platform == "win32":  # pragma: no cover - executed only on Windows
     import winreg
@@ -125,12 +126,16 @@ def list_chrome_profiles() -> list[tuple[str, str]]:
 
 
 def launch_chrome_with_profile(
-    url: str, profile_dir_id: str, chrome_path: str | None = None
+    url: str,
+    profile_dir_id: str,
+    open_target: Literal["tab", "window"] = "tab",
+    chrome_path: str | None = None,
 ) -> bool:
     """Launch Chrome with *profile_dir_id* and open *url*.
 
-    Returns True if Chrome was started successfully, otherwise False. Failure is
-    silent; callers should fall back to other open mechanisms.
+    ``open_target`` controls whether the URL opens in a new tab or window.
+    Returns True if Chrome was started successfully, otherwise False.
+    Failure is silent; callers should fall back to other open mechanisms.
     """
     if sys.platform != "win32":
         return False
@@ -138,9 +143,11 @@ def launch_chrome_with_profile(
     if not chrome:
         return False
     try:
-        subprocess.Popen(
-            [chrome, f"--profile-directory={profile_dir_id}", url], close_fds=True
-        )
+        cmd = [chrome, f"--profile-directory={profile_dir_id}"]
+        if open_target == "window":
+            cmd.append("--new-window")
+        cmd.append(url)
+        subprocess.Popen(cmd, close_fds=True)
         return True
     except OSError:
         return False
