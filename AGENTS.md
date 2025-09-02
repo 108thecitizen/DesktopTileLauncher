@@ -37,7 +37,7 @@ mypy .
 pytest -q -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
 These gates intentionally duplicate Ruff linting over the whole repo and over tests/ to guarantee tests/**/*.py are included, independent of configuration. 
 
-2) Test Execution Contract (Unit‑only)
+## 2) Test Execution Contract (Unit‑only)
 You are allowed to run unit tests only—fast, hermetic, no GUI/Qt/GL, no network, no external services.
 
 Allowed test command (only):
@@ -60,14 +60,14 @@ If you add tests, place unit tests in tests/unit/ and mark them @pytest.mark.uni
 
 If you must edit non‑unit tests (e.g., under tests/integration/), do not execute them; rely on CI/humans.
 
-3) Bandit (must always run, must always pass)
+## 3) Bandit (must always run, must always pass)
 Run bandit -r . on every Python change. Exit with code 0 only with zero findings.
 
 Prefer fixes over # nosec. If a narrow and justified # nosec[CODE] is unavoidable, explain it in the patch.
 
 Do not alter Bandit config to hide findings; fix the code instead. 
 
-4) Ruff & mypy Requirements
+## 4) Ruff & mypy Requirements
 Run both formatter and linter:
 
 ruff format --check .
@@ -80,7 +80,7 @@ Run strict typing checks: mypy .
 
 Keep imports, naming, and structure Ruff‑friendly. Prefer precise types; avoid broad ignores. 
 
-5) Operating Principles (kept from prior guidance)
+## 5) Operating Principles (kept from prior guidance)
 Never create binary files in the repo. 
 
 Write types first. Fully annotate new/modified public APIs; use from __future__ import annotations.
@@ -91,7 +91,7 @@ Handle third‑party typing gaps correctly (use types-<pkg> stubs or local stubs
 
 Continuously run the gates and iterate until they pass. 
 
-6) Output Contract (what the agent must return)
+## 6) Output Contract (what the agent must return)
 Produce one message with the following fenced sections, in order:
 
 text
@@ -122,7 +122,7 @@ Show pytest collected/selected counts and marker filtering; confirm no GUI/Qt/GL
 <Docs/config updates needed; any stub packages added; rationale for any narrow ignores.>
 If any required fact is missing (e.g., a Make target doesn’t exist), stop after PLAN, propose the minimal patch to add it, and then continue.
 
-7) Repository Configuration the Agent Should Maintain
+## 7) Repository Configuration the Agent Should Maintain
 If the files below already exist, update them; if not, add them at the repo root.
 
 pytest.ini — explicit markers & hermetic defaults
@@ -241,14 +241,14 @@ mypy_path = src
 [mypy-tests.*]
 disallow_untyped_defs = False
 check_untyped_defs = False
-8) Prohibited & Risky Commands (for clarity)
+## 8) Prohibited & Risky Commands (for clarity)
 ❌ pytest -q -k "multi_window or tray or lazy_refresh" — may import Qt/libGL and fail in headless envs.
 
 ❌ python -m pip show PySide6 — environment introspection not allowed; assume unavailable.
 
 ❌ Any pytest without the unit‑only selectors in §2.
 
-9) Agent Checklist (before declaring “done”)
+## 9) Agent Checklist (before declaring “done”)
 No binary files introduced.
 
 bandit -r . runs and passes with zero findings.
@@ -264,3 +264,4 @@ Any ignore is minimal, local, and explained.
 If you needed new Make/pytest/config entries, you added them via patch and included evidence.
 
 By contributing to this repository, any code‑generating agent agrees to stay within the capability boundary, to run Bandit on every Python change and fix issues until it passes, to lint both source and tests/ with Ruff, and to execute unit‑only tests that are safe in a headless environment.
+
