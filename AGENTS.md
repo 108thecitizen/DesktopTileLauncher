@@ -1,86 +1,232 @@
-AGENTS.md — Python Quality Gates (Rules 1–2, 6–8)
+# AGENTS.md — Python Quality Gates & Test‑Safe Rules
 
-Purpose. This repository uses AI-assisted code generation. This document binds any code‑generating agent (e.g., Codex) to the non‑negotiable quality gates for all Python work. Whenever the agent adds or edits Python code, it MUST ensure that the repository cleanly passes the checks below before considering the task complete.
+**Purpose**  
+This repository uses AI‑assisted code generation. This document binds any code‑generating agent (e.g., Codex) to non‑negotiable quality gates and *safe* test execution rules. Whenever the agent adds or edits Python, it MUST keep the repo in a state where the gates below **run** and **pass** cleanly.
 
-The Rules
+> This version keeps your existing gates—Bandit, Ruff (format + lint), mypy, pytest—and your “types‑first, minimal ignores” guidance, while adding: (1) *Bandit must always run and pass*, (2) a **unit‑only** test contract that avoids Qt/GL/GUI, and (3) explicit Ruff coverage of all Python files under `tests/`. :contentReference[oaicite:1]{index=1}
 
-1) Never create a binary file.
-2) Ensure that repository changes always pass Bandit security checks by running `bandit -r .`.
+---
 
-6) Ensure that all Python source would successfully pass mypy type checks.
-7) Ensure that all Python source would successfully pass Ruff lint checks.
-8) Ensure that all Python source would successfully pass Ruff format checks.
+## 0) Capability Boundary (Authoritative)
 
-Definition of Done for any change touching Python code:
+- You **do not** have GUI, libGL, Wayland/X11, browsers, Docker, GPUs, or external network access.  
+- Do **not** install system packages or attempt to verify system packages (e.g., **do not run** `python -m pip show PySide6`).  
+- If a task appears to require PySide6/Qt, libGL, or any external service, **stop after the PLAN** (see Output Contract) and explain what a human/CI must run. Do not attempt workarounds.
 
-bandit -r .
+> Rationale: commands like `pytest -q -k "multi_window or tray or lazy_refresh"` will fail in headless environments (e.g., `ImportError: libGL.so.1`), and `PySide6` may not be installed. These are outside the agent’s capabilities.
+
+---
+
+## 1) Definition of Done (Quality Gates — all must pass)
+
+**These exact commands must exit with code 0. No `|| true`, no skipping, no downgrading severities.**
+
+```bash
+# Security
+bandit -r .  # MUST run on every Python change and MUST pass with zero findings
+
+# Formatting and linting (entire repo and explicitly the tests/ tree)
 ruff format --check .
 ruff check .
+ruff check tests
+
+# Types
 mypy .
-pytest
 
+# Unit tests only (see §2)
+pytest -q -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
+These gates intentionally duplicate Ruff linting over the whole repo and over tests/ to guarantee tests/**/*.py are included, independent of configuration. 
 
-All five commands must exit with code 0.
+2) Test Execution Contract (Unit‑only)
+You are allowed to run unit tests only—fast, hermetic, no GUI/Qt/GL, no network, no external services.
 
-Agent Operating Procedure
+Allowed test command (only):
 
-Adopt or create config files. If the repo already has config, respect it. If not, the agent must add the baseline configurations shown below and then update them as needed to fit the codebase.
+bash
+Copy code
+make test_unit
+which must resolve to:
 
-Write types first. New and modified functions, methods, class attributes, and public module APIs must be fully annotated. Prefer precise types over Any. Use from __future__ import annotations at the top of new modules.
+bash
+Copy code
+pytest -q \
+  -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" \
+  -k "not multi_window and not tray and not lazy_refresh"
+Never invoke pytest without the selector above.
 
-Prefer fixes over ignores. Only use # type: ignore[code] or # noqa: RULE as a last resort, and always with the narrowest scope and an explanatory comment. Never disable entire rule families repo‑wide just to “make it pass”.
+Never run targeted GUI/Qt/libGL tests by name.
 
-Handle third‑party typing gaps properly. If a dependency lacks type hints:
+If you add tests, place unit tests in tests/unit/ and mark them @pytest.mark.unit.
 
-Add the relevant types-<package> stub dependency, or
+If you must edit non‑unit tests (e.g., under tests/integration/), do not execute them; rely on CI/humans.
 
-Add a minimal local stub in stubs/<package>/__init__.pyi, and
+3) Bandit (must always run, must always pass)
+Run bandit -r . on every Python change. Exit with code 0 only with zero findings.
 
-Use per‑module mypy overrides rather than global ignore_missing_imports = True.
+Prefer fixes over # nosec. If a narrow and justified # nosec[CODE] is unavoidable, explain it in the patch.
 
-Keep imports, naming, and structure Ruff‑friendly. Sort imports, remove unused code, prefer modern Python constructs, and keep cyclomatic complexity reasonable.
+Do not alter Bandit config to hide findings; fix the code instead. 
 
-Continuously run the gates. After generating or editing code, the agent must run the five commands above and iterate until they pass.
+4) Ruff & mypy Requirements
+Run both formatter and linter:
 
-Repository Configuration the Agent Should Maintain
+ruff format --check .
 
-If these files already exist, update them; if not, create them at the repo root.
+ruff check .
 
-pyproject.toml — Ruff configuration
+ruff check tests (explicit coverage of the test tree)
 
-Set target-version to the lowest supported Python version for this repo. If a [project] table exists with requires-python, mirror that here.
+Run strict typing checks: mypy .
 
+Keep imports, naming, and structure Ruff‑friendly. Prefer precise types; avoid broad ignores. 
+
+5) Operating Principles (kept from prior guidance)
+Never create binary files in the repo. 
+
+Write types first. Fully annotate new/modified public APIs; use from __future__ import annotations.
+
+Prefer fixes over ignores. Keep any # type: ignore[...] or # noqa: RULE minimal, local, and explained.
+
+Handle third‑party typing gaps correctly (use types-<pkg> stubs or local stubs/ rather than global ignore_missing_imports).
+
+Continuously run the gates and iterate until they pass. 
+
+6) Output Contract (what the agent must return)
+Produce one message with the following fenced sections, in order:
+
+text
+Copy code
+### PLAN
+<Short high-level plan and files you will touch (no hidden reasoning).>
+
+### PATCH
+<Unified diffs from repo root (apply with `git apply -p0`).>
+
+### TESTS
+<Diffs for new/updated unit tests only (placed under tests/unit/).>
+
+### EVIDENCE
+<Paste exact outputs for, in this order:
+  bandit -r .
+  ruff format --check .
+  ruff check .
+  ruff check tests
+  mypy .
+  make test_unit
+Show pytest collected/selected counts and marker filtering; confirm no GUI/Qt/GL tests executed.>
+
+### RISKS
+<Potential regressions + why integration/GUI tests were not run; what CI/humans should verify.>
+
+### NOTES
+<Docs/config updates needed; any stub packages added; rationale for any narrow ignores.>
+If any required fact is missing (e.g., a Make target doesn’t exist), stop after PLAN, propose the minimal patch to add it, and then continue.
+
+7) Repository Configuration the Agent Should Maintain
+If the files below already exist, update them; if not, add them at the repo root.
+
+pytest.ini — explicit markers & hermetic defaults
+ini
+Copy code
+[pytest]
+addopts = -q
+markers =
+    unit: fast, hermetic tests with no external deps or GUI/Qt/GL
+    integration: may touch DBs, services, or the OS
+    e2e: end-to-end workflows
+    slow: >5s runtime
+    network: requires internet or external APIs
+    gui: requires a display/Qt
+    qt: requires PySide6/PyQt
+    gl: requires OpenGL/libGL
+    x11: requires X11
+    wayland: requires Wayland
+    docker: requires containers
+    gpu: requires CUDA/Metal
+    perf: performance benchmarking
+    flaky: nondeterministic
+conftest.py — proactively skip GUI/Qt/GL when not available
+python
+Copy code
+import importlib.util
+import os
+import pytest
+
+def _has_qt() -> bool:
+    return importlib.util.find_spec("PySide6") is not None
+
+def _headless() -> bool:
+    # No display detected (common in agent environments)
+    return os.environ.get("DISPLAY") in (None, "",) and os.environ.get("WAYLAND_DISPLAY") in (None, "",)
+
+def pytest_collection_modifyitems(config, items):
+    skip_reasons = []
+    if not _has_qt():
+        skip_qt = pytest.mark.skip(reason="PySide6/Qt not available in agent environment")
+        for it in items:
+            if any(m.name in {"qt", "gui"} for m in it.iter_markers()):
+                it.add_marker(skip_qt)
+        skip_reasons.append("qt/gui")
+    if _headless():
+        skip_headless = pytest.mark.skip(reason="Headless environment; GUI/GL tests disabled")
+        for it in items:
+            if any(m.name in {"gui", "gl", "x11", "wayland"} for m in it.iter_markers()):
+                it.add_marker(skip_headless)
+        skip_reasons.append("gui/gl")
+    config.hook.pytest_deselected(items=[it for it in items if any(m.name in {"skip"} for m in it.own_markers)])
+Makefile — standardized local commands
+make
+Copy code
+.PHONY: setup fmt lint lint_tests types sec test_unit cov_unit qa
+
+setup:
+\tpython -m pip install --upgrade pip
+\t@if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+\t@if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
+fmt:
+\truff format .
+
+lint:
+\truff check .
+
+lint_tests:
+\truff check tests
+
+types:
+\tmypy .
+
+sec:
+\tbandit -r .
+
+test_unit:
+\tpytest -q -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
+
+cov_unit:
+\tpytest --cov=src --cov-report=term-missing -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
+
+qa: fmt lint lint_tests types sec test_unit
+pyproject.toml — Ruff configuration (ensure tests/ is fully covered)
+toml
+Copy code
 [tool.ruff]
-# Adjust to your project layout.
-src = ["src", "tests"]
 line-length = 100
-# Keep in sync with the project's supported Python version.
 target-version = "py311"
+# Keep src layout hints, but lint/format always run from repo root.
+src = ["src", "tests"]
 
 [tool.ruff.lint]
-# A pragmatic default: pycodestyle/pyflakes, import sorting, bugbear, pyupgrade,
-# simplifications, and Ruff-specific rules.
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
-# Add ignores sparingly; example: allow 'assert' in tests only.
 ignore = []
-
-[tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # If security rules are later enabled.
+per-file-ignores = { "tests/**" = [] }  # Do not exempt tests from linting.
 
 [tool.ruff.format]
-# Enforce a single coherent style across the repo.
 quote-style = "single"
 indent-style = "space"
 line-ending = "lf"
-skip-magic-trailing-comma = false
-
-
-If the repository opts into additional rule families (e.g., S for security, PL* for pylint), the agent must fix violations rather than turning rules off globally.
-
-mypy.ini — mypy configuration
-
-Favor strictness for new code; relax per‑module only when absolutely necessary.
-
+mypy.ini — strict by default, scoped relaxations for tests if needed
+ini
+Copy code
 [mypy]
 python_version = 3.11
 strict = True
@@ -89,120 +235,32 @@ show_error_codes = True
 warn_unused_ignores = True
 warn_redundant_casts = True
 warn_unreachable = True
-# Prefer targeted ignores to global import ignoring.
 ignore_missing_imports = False
-# Treat 'src' as the primary code root if present.
 mypy_path = src
 
-# Example: ease constraints in tests or legacy areas (edit paths to match repo).
 [mypy-tests.*]
 disallow_untyped_defs = False
 check_untyped_defs = False
+8) Prohibited & Risky Commands (for clarity)
+❌ pytest -q -k "multi_window or tray or lazy_refresh" — may import Qt/libGL and fail in headless envs.
 
+❌ python -m pip show PySide6 — environment introspection not allowed; assume unavailable.
 
-If the project uses frameworks needing plugins (e.g., Pydantic), the agent should add them only when present in dependencies (e.g., plugins = pydantic.mypy) and never unconditionally.
+❌ Any pytest without the unit‑only selectors in §2.
 
-.pre-commit-config.yaml — local commit gate (recommended)
-repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0 # pin to the latest stable tag when editing
-    hooks:
-      - id: ruff
-        args: ["--fix"]
-      - id: ruff-format
+9) Agent Checklist (before declaring “done”)
+No binary files introduced.
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v0 # pin to the latest stable tag when editing
-    hooks:
-      - id: mypy
-        # Keep in sync with mypy.ini and add type stubs as needed.
-        additional_dependencies: []
+bandit -r . runs and passes with zero findings.
 
+ruff format --check ., ruff check ., and ruff check tests pass.
 
-After adding this file, run: pip install pre-commit && pre-commit install.
+mypy . passes.
 
-.github/workflows/quality.yml — CI enforcement (recommended)
-name: Quality Gates
+make test_unit runs only unit tests and passes; GUI/Qt/GL tests are not executed.
 
-on:
-  pull_request:
-  push:
-    branches: [ main, master ]
+Any ignore is minimal, local, and explained.
 
-jobs:
-  quality:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+If you needed new Make/pytest/config entries, you added them via patch and included evidence.
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-          # Ensure tools are present for the gates:
-          pip install "ruff>=0.4" "mypy>=1.8"  # versions may be adjusted upward
-
-      - name: Ruff format (check)
-        run: ruff format --check .
-
-      - name: Ruff lint
-        run: ruff check .
-
-      - name: mypy
-        run: mypy .
-
-Coding Guidance (so the gates pass the first time)
-
-Type everything that crosses a boundary. All public functions, methods, dataclass fields, and module‑level variables must be annotated. For generics, avoid bare containers (list, dict)—use list[str], dict[str, int], etc.
-
-Use postponed evaluation of annotations. Put from __future__ import annotations at the top of new modules to avoid runtime import cycles and enable forward references without quotes.
-
-Prefer precise types over Any. Reach for TypedDict, Protocol, and Literal where helpful. Use typing.cast with an explanatory comment if narrowing is required.
-
-Keep imports clean. Remove unused imports and variables, group and sort imports (Ruff will enforce), and avoid wildcard imports.
-
-Modernize while you’re there. Prefer f‑strings, comprehensions, pathlib.Path, enumerate, dataclasses, and contextlib helpers—Ruff (UP, SIM, B) will guide these.
-
-Localized exceptions only. If an ignore is unavoidable, use the narrowest code (e.g., # type: ignore[arg-type] # explanation) or line‑specific # noqa: RUF100 # explanation.
-
-Convenience (optional but encouraged)
-
-Add a Makefile to standardize local runs:
-
-.PHONY: format lint typecheck qa
-format:
-	ruff format .
-	ruff check --fix .
-
-lint:
-	ruff check .
-
-typecheck:
-	mypy .
-
-qa: format lint typecheck
-
-Agent Checklist (before declaring a task “done”)
-
-Code compiles and runs.
-
-No binary files have been introduced into the repository.
-
-bandit -r . passes with zero findings.
-
-ruff format --check . passes.
-
-ruff check . passes with zero errors (and no broad, unjustified ignores).
-
-mypy . passes with zero errors, using the repo’s mypy.ini.
-
-Any added ignores or overrides are minimal, documented, and scoped.
-
-CI configuration and pre‑commit hooks are updated if the change requires it (e.g., new stubs).
-
-By contributing to this repository, any code‑generating agent agrees to follow Rules 1–2 and 6–8 above and to keep the repository in a state where these gates pass at all times.
+By contributing to this repository, any code‑generating agent agrees to stay within the capability boundary, to run Bandit on every Python change and fix issues until it passes, to lint both source and tests/ with Ruff, and to execute unit‑only tests that are safe in a headless environment.
