@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
+import uuid
 import webbrowser
 import urllib.parse
 import urllib.request
@@ -17,12 +20,22 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Literal, Optional, cast
-import shutil
 
-from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, qWarning
+from PySide6.QtCore import (
+    QByteArray,
+    QMimeData,
+    QObject,
+    QPoint,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+    qWarning,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QCloseEvent,
     QDrag,
     QDragEnterEvent,
     QDropEvent,
@@ -40,6 +53,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QSystemTrayIcon,
     QScrollArea,
     QTabWidget,
     QToolBar,
@@ -198,11 +212,20 @@ class Tile:
 
 
 @dataclass
+class WindowConfig:
+    id: str
+    selected_tab: str
+    geometry_b64: str = ""
+    is_maximized: bool = False
+
+
+@dataclass
 class LauncherConfig:
     title: str = "Launcher"
     columns: int = 5
     tiles: list["Tile"] = field(default_factory=list)
     tabs: list[str] = field(default_factory=lambda: ["Main"])
+    windows: list[WindowConfig] = field(default_factory=list)
 
     @staticmethod
     def load():
@@ -214,11 +237,13 @@ class LauncherConfig:
             for t in tiles:
                 if t.tab not in tabs:
                     tabs.append(t.tab)
+            windows = [WindowConfig(**w) for w in data.get("windows", [])]
             return LauncherConfig(
                 title=data.get("title", "Launcher"),
                 columns=data.get("columns", 5),
                 tiles=tiles,
                 tabs=tabs,
+                windows=windows,
             )
         # first run – create a friendly default
         cfg = LauncherConfig(
@@ -246,6 +271,7 @@ class LauncherConfig:
             "columns": self.columns,
             "tiles": tiles,
             "tabs": self.tabs,
+            "windows": [asdict(w) for w in self.windows],
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -294,6 +320,100 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, ch)
     p.end()
     return QIcon(pix)
+
+
+class AppState(QObject):
+    model_changed = Signal(str, str, dict)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cfg = LauncherConfig.load()
+
+    def emit_change(self, tab: str, kind: str, payload: dict | None = None) -> None:
+        self.model_changed.emit(tab, kind, payload or {})
+
+
+APP_STATE = AppState()
+
+
+class WindowManager(QObject):
+    def __init__(self, app: QApplication, state: AppState | None = None) -> None:
+        super().__init__()
+        self.app = app
+        self.state = state or APP_STATE
+        self.windows: dict[str, Main] = {}
+        self.tray: QSystemTrayIcon | None = None
+        self._tray_new_action: QAction | None = None
+        self._init_tray()
+
+    def _init_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        icon = QIcon(str(Path(__file__).with_name("DesktopTileLauncher.ico")))
+        tray = QSystemTrayIcon(icon, self.app)
+        menu = QMenu()
+        new_action = QAction("New Window", menu)
+        new_action.triggered.connect(lambda: self.new_window())
+        menu.addAction(new_action)
+        menu.addSeparator()
+        quit_action = QAction("Quit", menu)
+        quit_action.triggered.connect(self.quit)
+        menu.addAction(quit_action)
+        tray.setContextMenu(menu)
+        tray.show()
+        self.tray = tray
+        self._tray_new_action = new_action
+
+    def open_initial_windows(self) -> None:
+        cfg = self.state.cfg
+        if cfg.windows:
+            for w in cfg.windows:
+                self.new_window_from_config(w)
+        else:
+            self.new_window()
+            self.state.cfg.save()
+
+    def new_window(self, selected_tab: str | None = None) -> "Main":
+        tab = selected_tab or (self.state.cfg.tabs[0] if self.state.cfg.tabs else "Main")
+        win_cfg = WindowConfig(id=str(uuid.uuid4()), selected_tab=tab)
+        self.state.cfg.windows.append(win_cfg)
+        win = Main(self, win_cfg)
+        self.windows[win_cfg.id] = win
+        win.show()
+        return win
+
+    def new_window_from_config(self, win_cfg: WindowConfig) -> "Main":
+        win = Main(self, win_cfg)
+        self.windows[win_cfg.id] = win
+        if win_cfg.geometry_b64:
+            geom = QByteArray.fromBase64(win_cfg.geometry_b64.encode())
+            win.restoreGeometry(geom)
+        if win_cfg.is_maximized:
+            win.showMaximized()
+        else:
+            win.show()
+        return win
+
+    def save_window_state(self, win: "Main") -> None:
+        cfg = win.window_cfg
+        cfg.selected_tab = win.current_tab()
+        cfg.is_maximized = win.isMaximized()
+        cfg.geometry_b64 = base64.b64encode(bytes(win.saveGeometry())).decode("ascii")
+
+    def on_window_closed(self, win: "Main") -> None:
+        self.save_window_state(win)
+        self.windows.pop(win.window_cfg.id, None)
+        self.state.cfg.windows = [w for w in self.state.cfg.windows if w.id != win.window_cfg.id]
+        self.state.cfg.save()
+
+    def save_all_windows_state(self) -> None:
+        for w in list(self.windows.values()):
+            self.save_window_state(w)
+        self.state.cfg.save()
+
+    def quit(self) -> None:
+        self.save_all_windows_state()
+        self.app.quit()
 
 
 class TileButton(QToolButton):
@@ -462,9 +582,14 @@ def _tile_uses_chrome(tile: Tile) -> bool:
 
 
 class Main(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, manager: "WindowManager", window_cfg: WindowConfig) -> None:
         super().__init__()
-        self.cfg = LauncherConfig.load()
+        self.manager = manager
+        self.state = manager.state
+        self.cfg = self.state.cfg
+        self.window_cfg = window_cfg
+        self.dirty_tabs: set[str] = set()
+        self.state.model_changed.connect(self._on_model_changed)
 
         # Automatically expand to show more columns based on the number of
         # tiles across all tabs. More than 25 tiles expands to six columns and
@@ -499,17 +624,24 @@ class Main(QMainWindow):
         tab_menu.addAction("Rename Tab", self.rename_tab)
         tab_menu.addAction("Delete Tab", self.delete_tab)
 
+        window_menu = self.menuBar().addMenu("Window")
+        new_window_act = QAction("New Window", self)
+        new_window_act.triggered.connect(lambda: self.manager.new_window(self.current_tab()))
+        window_menu.addAction(new_window_act)
+
         debug_menu = self.menuBar().addMenu("Debug")
         debug_menu.addAction("Raise Exception", self._debug_raise)
         debug_menu.addAction("Qt Warning", lambda: qWarning("test"))
 
         self.tabs_widget = QTabWidget()
-        self.tabs_widget.currentChanged.connect(
-            lambda _=0: QTimer.singleShot(0, self.resize_to_fit_tiles)
-        )
+        self.tabs_widget.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs_widget)
 
         self.rebuild()
+        if self.window_cfg.selected_tab in self.cfg.tabs:
+            self.tabs_widget.setCurrentIndex(
+                self.cfg.tabs.index(self.window_cfg.selected_tab)
+            )
 
     # -------- UI building --------
     def rebuild(self) -> None:
@@ -600,6 +732,28 @@ class Main(QMainWindow):
         if tile_count > 20:
             self.move(self.x(), screen.top())
 
+    def _on_model_changed(self, tab_name: str, change_kind: str, payload: dict) -> None:
+        current = self.current_tab()
+        if tab_name and tab_name != current:
+            self.dirty_tabs.add(tab_name)
+            return
+        if not tab_name:
+            self.rebuild()
+            return
+        if tab_name == current:
+            self.rebuild()
+
+    def _on_tab_changed(self, index: int) -> None:
+        self.window_cfg.selected_tab = self.current_tab()
+        if self.window_cfg.selected_tab in self.dirty_tabs:
+            self.rebuild()
+            self.dirty_tabs.discard(self.window_cfg.selected_tab)
+        QTimer.singleShot(0, self.resize_to_fit_tiles)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt override)
+        self.manager.on_window_closed(self)
+        super().closeEvent(event)
+
     def current_tab(self) -> str:
         idx = self.tabs_widget.currentIndex()
         if idx < 0:
@@ -645,6 +799,7 @@ class Main(QMainWindow):
             insert_at -= 1
         self.cfg.tiles.insert(insert_at, tile)
         self.cfg.save()
+        self.state.model_changed.emit(tab, "tiles_moved", {})
         self._populate_tab(tab)
 
     def add_tile(self) -> None:
@@ -670,10 +825,10 @@ class Main(QMainWindow):
                 )
             )
             self.cfg.save()
+            target_tab = cast(str, data["tab"])
+            self.state.model_changed.emit(target_tab, "tile_added", {})
             self.rebuild()
-            self.tabs_widget.setCurrentIndex(
-                self.cfg.tabs.index(cast(str, data["tab"]))
-            )
+            self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(target_tab))
 
     def edit_tile(self, tile: Tile) -> None:
         dlg = TileEditorDialog(
@@ -689,11 +844,15 @@ class Main(QMainWindow):
             tile.name = cast(str, data["name"])
             tile.url = cast(str, data["url"])
             tile.icon = data["icon"]
+            old_tab = tile.tab
             tile.tab = cast(str, data["tab"])
             tile.browser = data["browser"]
             tile.chrome_profile = data["chrome_profile"]
             tile.open_target = cast(str, data["open_target"])
             self.cfg.save()
+            self.state.model_changed.emit(tile.tab, "tile_edited", {})
+            if old_tab != tile.tab:
+                self.state.model_changed.emit(old_tab, "tile_edited", {})
             self.rebuild()
             self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tile.tab))
 
@@ -702,6 +861,7 @@ class Main(QMainWindow):
         idx = self.cfg.tiles.index(tile)
         self.cfg.tiles.insert(idx + 1, new_tile)
         self.cfg.save()
+        self.state.model_changed.emit(tile.tab, "tile_added", {})
         self.rebuild()
         self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tile.tab))
 
@@ -716,11 +876,15 @@ class Main(QMainWindow):
         if ok == QMessageBox.StandardButton.Yes:
             self.cfg.tiles = [t for t in self.cfg.tiles if t is not tile]
             self.cfg.save()
+            self.state.model_changed.emit(tile.tab, "tile_removed", {})
             self.rebuild()
 
     def change_tile_tab(self, tile: Tile, new_tab: str) -> None:
+        old_tab = tile.tab
         tile.tab = new_tab
         self.cfg.save()
+        self.state.model_changed.emit(new_tab, "tile_moved", {})
+        self.state.model_changed.emit(old_tab, "tile_moved", {})
         self.rebuild()
         self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(new_tab))
 
@@ -736,6 +900,7 @@ class Main(QMainWindow):
             return
         self.cfg.tabs.append(name)
         self.cfg.save()
+        self.state.model_changed.emit(name, "tab_added", {})
         self.rebuild()
         self.tabs_widget.setCurrentIndex(len(self.cfg.tabs) - 1)
 
@@ -759,6 +924,7 @@ class Main(QMainWindow):
             if t.tab == current:
                 t.tab = name
         self.cfg.save()
+        self.state.model_changed.emit(current, "tab_renamed", {"new": name})
         self.rebuild()
         self.tabs_widget.setCurrentIndex(idx)
 
@@ -779,6 +945,7 @@ class Main(QMainWindow):
         self.cfg.tabs = [t for t in self.cfg.tabs if t != current]
         self.cfg.tiles = [t for t in self.cfg.tiles if t.tab != current]
         self.cfg.save()
+        self.state.model_changed.emit(current, "tab_deleted", {})
         self.rebuild()
 
     def _debug_raise(self) -> None:
@@ -788,6 +955,6 @@ class Main(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     install_debug_scaffold(app, app_name="DesktopTileLauncher")
-    mw = Main()
-    mw.show()
+    manager = WindowManager(app, APP_STATE)
+    manager.open_initial_windows()
     sys.exit(app.exec())

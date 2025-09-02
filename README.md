@@ -28,3 +28,19 @@ this behavior and may not differentiate between tabs and windows.
 
 Existing configurations that lack this setting are automatically migrated and
 default to opening URLs in a new tab.
+
+## Multiple windows
+
+DesktopTileLauncher supports multiple peer windows. Create another window from
+**Window → New Window** or from the system tray icon's **New Window** action.
+The tray icon remains after all windows close so new ones can be spawned; use
+**Quit** in the tray to exit the app.
+
+Open windows persist across restarts. Each window's ID, geometry, maximized
+state, and last selected tab are stored in `config.json` under a `windows`
+array. On startup, one window per entry is restored (if none exist, a single
+window opens with the first tab).
+
+Windows receive model updates lazily: changes made on a background tab are not
+rendered in other windows until that tab is selected, avoiding unnecessary
+rebuilds.
