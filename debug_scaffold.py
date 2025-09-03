@@ -357,17 +357,35 @@ def install_debug_scaffold(
 
     fh_path = log_dir / "faulthandler.log"
     fh_file = open(fh_path, "a", encoding="utf-8")
+# Enable faulthandler to write tracebacks on fatal errors (best-effort).
+try:
     faulthandler.enable(fh_file)
-    faulthandler.register(signal.SIGSEGV, fh_file)
-    faulthandler.register(signal.SIGABRT, fh_file)
+except Exception:
+    # In some frozen builds or limited environments, faulthandler may not be fully available.
+    pass
+
+# Optionally register a user-triggered signal (if supported) to dump traces on demand.
+for _sig in ("SIGUSR1", "SIGUSR2", "SIGBREAK"):
+    signum = getattr(signal, _sig, None)
+    if signum is not None and hasattr(faulthandler, "register"):
+        try:
+            faulthandler.register(signum, fh_file)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
 
     def _fatal_marker(signum: int, _frame: Any) -> None:
         root_logger.error(
             "fatal_signal", extra={"event": "fatal_signal", "signal": signum}
         )
 
-    signal.signal(signal.SIGSEGV, _fatal_marker)
-    signal.signal(signal.SIGABRT, _fatal_marker)
+for _sig in ("SIGSEGV", "SIGABRT"):
+    signum = getattr(signal, _sig, None)
+    if signum is not None:
+        try:
+            signal.signal(signum, _fatal_marker)
+        except Exception:
+            pass
 
     def handle_exception(
         exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
