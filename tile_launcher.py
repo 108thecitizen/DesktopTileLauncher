@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPainter,
     QPixmap,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -47,7 +49,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from debug_scaffold import install_debug_scaffold
+import debug_scaffold
+from debug_scaffold import record_breadcrumb, sanitize_url
 from tile_editor_dialog import TileEditorDialog
 from browser_chrome_win import (
     is_windows_default_browser_chrome,
@@ -512,6 +515,10 @@ class Main(QMainWindow):
         self.rebuild()
 
     # -------- UI building --------
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: D401
+        super().showEvent(event)
+        record_breadcrumb("window_shown")
+
     def rebuild(self) -> None:
         self.tabs_widget.clear()
         self._grids: dict[str, QGridLayout] = {}
@@ -608,31 +615,79 @@ class Main(QMainWindow):
 
     # -------- actions --------
     def open_tile(self, tile: Tile) -> None:
+        logger = logging.getLogger(__name__)
         plan = build_launch_plan(tile)
-        print(
-            f"launch: browser={plan.browser_name or 'default'}, "
-            f"open_target={plan.open_target}, profile={plan.profile}, "
-            f"command={plan.command}, controller={plan.controller}, new={plan.new}"
+        url = sanitize_url(tile.url)
+        record_breadcrumb(
+            "launch_attempt",
+            name=tile.name,
+            url=url,
+            browser=plan.browser_name or "default",
+        )
+        logger.info(
+            "browser_launch_attempt",
+            extra={
+                "event": "browser_launch_attempt",
+                "browser": plan.browser_name or "default",
+                "flags": plan.command[1:-1] if plan.command else [],
+                "profile": plan.profile,
+                "url": url,
+                "platform": sys.platform,
+                "pid": os.getpid(),
+            },
         )
         profile = tile.chrome_profile
         if profile and _tile_uses_chrome(tile):
             if launch_chrome_with_profile(tile.url, profile, tile.open_target):
+                record_breadcrumb("launch_result", ok=True, url=url)
+                logger.info(
+                    "browser_launch_result",
+                    extra={"event": "browser_launch_result", "ok": True},
+                )
                 return
             qWarning(
                 f"Chrome not found or failed to launch with profile '{profile}'; falling back."
             )
         if plan.command:
             try:
+                debug_scaffold.last_launch_command = " ".join(plan.command)
                 subprocess.Popen(plan.command, close_fds=True)
+                record_breadcrumb("launch_result", ok=True, url=url)
+                logger.info(
+                    "browser_launch_result",
+                    extra={"event": "browser_launch_result", "ok": True},
+                )
                 return
-            except OSError:
+            except OSError as exc:
+                logger.error(
+                    "browser_launch_result",
+                    extra={
+                        "event": "browser_launch_result",
+                        "ok": False,
+                        "error": str(exc),
+                    },
+                )
                 qWarning("Failed to launch command; falling back.")
         try:
             if plan.controller and plan.controller != "default":
                 webbrowser.get(plan.controller).open(tile.url, new=plan.new or 0)
             else:
                 webbrowser.open(tile.url, new=plan.new or 0)
-        except webbrowser.Error:
+            record_breadcrumb("launch_result", ok=True, url=url)
+            logger.info(
+                "browser_launch_result",
+                extra={"event": "browser_launch_result", "ok": True},
+            )
+        except webbrowser.Error as exc:
+            record_breadcrumb("launch_result", ok=False, url=url)
+            logger.error(
+                "browser_launch_result",
+                extra={
+                    "event": "browser_launch_result",
+                    "ok": False,
+                    "error": str(exc),
+                },
+            )
             webbrowser.open(tile.url, new=plan.new or 0)
 
     def move_tile(self, tab: str, from_idx: int, to_idx: int) -> None:
@@ -673,6 +728,12 @@ class Main(QMainWindow):
             self.rebuild()
             self.tabs_widget.setCurrentIndex(
                 self.cfg.tabs.index(cast(str, data["tab"]))
+            )
+            record_breadcrumb(
+                "tile_add",
+                name=cast(str, data["name"]),
+                url=sanitize_url(cast(str, data["url"])),
+                tab=cast(str, data["tab"]),
             )
 
     def edit_tile(self, tile: Tile) -> None:
@@ -787,7 +848,7 @@ class Main(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    install_debug_scaffold(app, app_name="DesktopTileLauncher")
+    debug_scaffold.install_debug_scaffold(app, app_name="DesktopTileLauncher")
     mw = Main()
     mw.show()
     sys.exit(app.exec())
