@@ -1,0 +1,14 @@
+# bandit.yaml
+exclude_dirs:
+  - .venv
+  - venv
+  - .tox
+  - .git
+  - build
+  - dist
+  - __pycache__
+
+# If you don't want tests scanned (Bandit often flags pytest 'assert' as B101):
+# - tests
+
+# Optionally, you can fine-tune rules via 'skips' or 'tests', but prefer inline '# nosec' with justification.

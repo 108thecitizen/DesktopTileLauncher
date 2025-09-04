@@ -1,5 +1,6 @@
 import os
-import subprocess
+import subprocess  # nosec B404
+
 import webbrowser
 
 import pytest
@@ -31,8 +32,10 @@ def test_open_tile_uses_specific_browser(monkeypatch):
     tile = Tile(name="t", url="http://example.com", browser="firefox")
     main = Main.__new__(Main)
     main.open_tile(tile)
-    assert launched["cmd"][0] == "firefox"
-    assert "--new-tab" in launched["cmd"]
+    assert launched["cmd"][0] == "firefox"  # nosec B101
+
+    assert "--new-tab" in launched["cmd"]  # nosec B101
+
 
 
 def test_open_tile_uses_default_browser(monkeypatch):
@@ -56,4 +59,5 @@ def test_open_tile_uses_default_browser(monkeypatch):
     tile = Tile(name="t", url="http://example.com")
     main = Main.__new__(Main)
     main.open_tile(tile)
-    assert opened == {"default": "http://example.com"}
+    assert opened == {"default": "http://example.com"}  # nosec B101
+

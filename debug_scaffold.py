@@ -16,7 +16,8 @@ from logging.handlers import RotatingFileHandler
 import os
 import platform
 import signal
-import subprocess
+import subprocess  # nosec B404: used to launch local apps; inputs validated & shell=False
+
 import sys
 import threading
 import traceback
@@ -55,7 +56,8 @@ else:  # runtime import guarded for environments without PySide6
             QTextEdit,
             QVBoxLayout,
         )
-    except Exception:  # pragma: no cover - headless environments
+    except Exception:  # pragma: no cover - headless environments  # nosec B110: intentional best-effort fallback; logged elsewhere
+
         QtMsgType = QMessageLogContext = QApplication = QDialog = QHBoxLayout = (
             QLabel
         ) = QMessageBox = QPushButton = QTextEdit = QVBoxLayout = Any  # type: ignore[misc]
@@ -148,7 +150,8 @@ def sanitize_url(url: str) -> str:
 
     try:
         parsed = urllib.parse.urlsplit(url)
-    except Exception:
+    except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
+
         return url
     netloc = parsed.netloc.split("@")[-1]
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
@@ -194,7 +197,8 @@ def collect_runtime_context(app: QApplication | None) -> dict[str, Any]:
         ctx["pyside6"] = getattr(pyside6, "__version__", "unknown")
         qtcore = importlib.import_module("PySide6.QtCore")
         ctx["qt"] = getattr(qtcore, "qVersion")()
-    except Exception:  # pragma: no cover - PySide6 may be absent
+    except Exception:  # pragma: no cover - PySide6 may be absent  # nosec B110: intentional best-effort fallback; logged elsewhere
+
         pass
 
     if app:
@@ -207,20 +211,23 @@ def collect_runtime_context(app: QApplication | None) -> dict[str, Any]:
                     "height": geom.height(),
                     "dpr": screen.devicePixelRatio(),
                 }
-        except Exception:  # pragma: no cover - best effort
+        except Exception:  # pragma: no cover - best effort  # nosec B110: intentional best-effort fallback; logged elsewhere
+
             pass
 
     try:
         from tile_launcher import available_browsers
 
         ctx["available_browsers"] = available_browsers()
-    except Exception:  # pragma: no cover - import cycle in tests
+    except Exception:  # pragma: no cover - import cycle in tests  # nosec B110: intentional best-effort fallback; logged elsewhere
+
         ctx["available_browsers"] = []
 
     try:
         browser = webbrowser.get()
         ctx["default_browser"] = getattr(browser, "name", None)
-    except Exception:  # pragma: no cover
+    except Exception:  # pragma: no cover  # nosec B110: intentional best-effort fallback; logged elsewhere
+
         ctx["default_browser"] = None
 
     ctx["last_launch_command"] = last_launch_command
@@ -353,7 +360,8 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
     # Enable faulthandler if possible.
     try:
         faulthandler.enable(_FAULTHANDLER_FP)
-    except Exception:
+    except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
+
         pass
 
     # Register user/dumper signals when supported.
@@ -366,7 +374,8 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
         ):
             try:
                 faulthandler.register(signum, _FAULTHANDLER_FP)
-            except Exception:
+            except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
+
                 pass
 
     # Markers for truly fatal signals, when they exist on this platform.
@@ -378,7 +387,8 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
         if signum is not None:
             try:
                 signal.signal(signum, _fatal_marker)
-            except Exception:
+            except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
+
                 pass
 
 

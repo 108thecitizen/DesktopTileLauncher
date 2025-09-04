@@ -17,5 +17,6 @@ def test_expands_to_seven_columns(tmp_path, monkeypatch):
 
     app = QApplication([])
     main = Main()
-    assert main.cfg.columns == 7
+    assert main.cfg.columns == 7  # nosec B101
+
     app.quit()

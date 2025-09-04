@@ -14,10 +14,14 @@ def test_create_crash_bundle(tmp_path) -> None:  # type: ignore[no-untyped-def]
     (log_dir / "debug.log").write_text("log")
     context = {"foo": "bar"}
     bundle = create_crash_bundle(log_dir, context)
-    assert bundle.exists()
+    assert bundle.exists()  # nosec B101
+
     with zipfile.ZipFile(bundle) as zf:
         names = set(zf.namelist())
-        assert "debug.log" in names
-        assert "crash.json" in names
+        assert "debug.log" in names  # nosec B101
+
+        assert "crash.json" in names  # nosec B101
+
         crash_data = json.loads(zf.read("crash.json").decode("utf-8"))
-        assert crash_data["foo"] == "bar"
+        assert crash_data["foo"] == "bar"  # nosec B101
+

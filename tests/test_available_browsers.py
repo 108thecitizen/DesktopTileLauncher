@@ -28,8 +28,10 @@ def test_available_browsers_detects_common_executables(monkeypatch):
     monkeypatch.setattr(shutil, "which", fake_which)
 
     browsers = available_browsers()
-    assert "brave" in browsers
-    assert "firefox" in browsers
+    assert "brave" in browsers  # nosec B101
+
+    assert "firefox" in browsers  # nosec B101
+
 
 
 def test_available_browsers_detects_safari(monkeypatch):
@@ -44,4 +46,5 @@ def test_available_browsers_detects_safari(monkeypatch):
     monkeypatch.setattr(Path, "exists", fake_exists)
 
     browsers = available_browsers()
-    assert "safari" in browsers
+    assert "safari" in browsers  # nosec B101
+
