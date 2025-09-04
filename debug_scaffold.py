@@ -365,7 +365,7 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
             and _FAULTHANDLER_FP is not None
         ):
             try:
-                faulthandler.register(signum, _FAULTHANDLER_FP)  # type: ignore[attr-defined]
+                faulthandler.register(signum, _FAULTHANDLER_FP)
             except Exception:
                 pass
 
