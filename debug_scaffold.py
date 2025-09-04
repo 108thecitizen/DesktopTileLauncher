@@ -26,7 +26,9 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Deque, Dict, TYPE_CHECKING
+from typing import Any, Deque, Dict, TYPE_CHECKING, Optional, TextIO
+
+_FAULTHANDLER_FP: Optional[TextIO] = None
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from PySide6.QtCore import QtMsgType, QMessageLogContext, qInstallMessageHandler
@@ -336,6 +338,43 @@ class CrashDialog(QDialog):  # pragma: no cover - GUI code
             f"title={title}&body={body}"
         )
 
+def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
+    """Enable faulthandler in a best‑effort, cross‑platform way."""
+    global _FAULTHANDLER_FP
+
+    fh_path = log_dir / "faulthandler.log"
+    try:
+        _FAULTHANDLER_FP = open(fh_path, "a", encoding="utf-8")
+    except OSError:
+        _FAULTHANDLER_FP = None
+        return
+
+    # Enable faulthandler if possible.
+    try:
+        faulthandler.enable(_FAULTHANDLER_FP)
+    except Exception:
+        pass
+
+    # Register user/dumper signals when supported.
+    for name in ("SIGUSR1", "SIGUSR2", "SIGBREAK"):
+        signum = getattr(signal, name, None)
+        if signum is not None and hasattr(faulthandler, "register") and _FAULTHANDLER_FP is not None:
+            try:
+                faulthandler.register(signum, _FAULTHANDLER_FP)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+    # Markers for truly fatal signals, when they exist on this platform.
+    def _fatal_marker(signum: int, _frame: Any) -> None:
+        logger.error("fatal_signal", extra={"event": "fatal_signal", "signal": signum})
+
+    for name in ("SIGSEGV", "SIGABRT"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            try:
+                signal.signal(signum, _fatal_marker)
+            except Exception:
+                pass
 
 def install_debug_scaffold(
     app: QApplication, app_name: str = "DesktopTileLauncher"
@@ -353,40 +392,18 @@ def install_debug_scaffold(
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
-    root_logger.addHandler(handler)
+    
+    if not any(
+        isinstance(h, RotatingFileHandler)
+        and getattr(h, "baseFilename", None) == str(log_path)
+        for h in root_logger.handlers
+    ):
+        root_logger.addHandler(handler)
 
-    fh_path = log_dir / "faulthandler.log"
-    fh_file = open(fh_path, "a", encoding="utf-8")
-# Enable faulthandler to write tracebacks on fatal errors (best-effort).
-try:
-    faulthandler.enable(fh_file)
-except Exception:
-    # In some frozen builds or limited environments, faulthandler may not be fully available.
-    pass
+    # Best‑effort faulthandler (safe on Windows/frozen builds)
+    _try_setup_faulthandler(log_dir, root_logger)
 
-# Optionally register a user-triggered signal (if supported) to dump traces on demand.
-for _sig in ("SIGUSR1", "SIGUSR2", "SIGBREAK"):
-    signum = getattr(signal, _sig, None)
-    if signum is not None and hasattr(faulthandler, "register"):
-        try:
-            faulthandler.register(signum, fh_file)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-
-
-    def _fatal_marker(signum: int, _frame: Any) -> None:
-        root_logger.error(
-            "fatal_signal", extra={"event": "fatal_signal", "signal": signum}
-        )
-
-for _sig in ("SIGSEGV", "SIGABRT"):
-    signum = getattr(signal, _sig, None)
-    if signum is not None:
-        try:
-            signal.signal(signum, _fatal_marker)
-        except Exception:
-            pass
-
+    # ---- exception / logging hooks (capture app + logger via closure)
     def handle_exception(
         exc_type: type[BaseException], exc: BaseException, tb: TracebackType | None
     ) -> None:
@@ -409,8 +426,9 @@ for _sig in ("SIGSEGV", "SIGABRT"):
 
     sys.unraisablehook = unraisable_hook
 
-    if qInstallMessageHandler is not None:
-
+    # Pipe Qt messages into Python logging only when Qt is present.
+    # The hasattr() guard prevents AttributeError when PySide6 isn't installed.
+    if callable(qInstallMessageHandler) and hasattr(QtMsgType, "QtDebugMsg"):
         def qt_message_handler(
             mode: QtMsgType, context: QMessageLogContext, message: str
         ) -> None:
@@ -423,8 +441,10 @@ for _sig in ("SIGSEGV", "SIGABRT"):
             }
             root_logger.log(level_map.get(mode, logging.INFO), message)
             if mode == QtMsgType.QtFatalMsg:
+                # Terminate predictably on Qt fatal messages
                 raise SystemExit(message)
 
         qInstallMessageHandler(qt_message_handler)
 
     record_breadcrumb("app_start")
+
