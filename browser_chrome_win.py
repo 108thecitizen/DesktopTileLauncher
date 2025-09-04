@@ -52,7 +52,7 @@ def _reg_query_app_paths() -> t.Optional[str]:
             with winreg.OpenKey(
                 hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
             ) as key:
-                val, _ = winreg.QueryValueEx(key, None)
+                val, _ = t.cast(t.Any, winreg).QueryValueEx(key, None)
                 if isinstance(val, str) and os.path.isfile(val):
                     return val
         except OSError:
