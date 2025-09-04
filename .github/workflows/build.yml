@@ -84,12 +84,24 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path .\DesktopTileLauncher.spec) {
-            pyinstaller .\DesktopTileLauncher.spec
+            pyinstaller .\DesktopTileLauncher.spec --noupx --clean
           } else {
-            pyinstaller --onefile .\tile_launcher.py --name DesktopTileLauncher --icon DesktopTileLauncher.ico --version-file version_info.txt
+            pyinstaller --onedir --noupx --clean .\tile_launcher.py --name DesktopTileLauncher --icon DesktopTileLauncher.ico --version-file version_info.txt
           }
 
         # Add this right before "Upload artifact"
+
+      - name: Zip the onedir output for distribution
+        shell: pwsh
+        run: |
+          $dist = Join-Path 'dist' 'DesktopTileLauncher'
+          if (!(Test-Path $dist)) {
+            Write-Error "Expected output folder not found: $dist"
+          }
+          $zip = "DesktopTileLauncher-onedir-win-x64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip
+
       - name: Sanitize artifact name
         id: artifact_vars
         shell: pwsh
@@ -108,9 +120,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.artifact_vars.outputs.name }}
-          path: |
-            dist/**/DesktopTileLauncher.exe
-            dist/**/DesktopTileLauncher-*.exe
-          # optional but helpful:
-          # if-no-files-found: error
-
+          path: DesktopTileLauncher-onedir-win-x64.zip
