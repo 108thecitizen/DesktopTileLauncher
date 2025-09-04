@@ -80,14 +80,9 @@ jobs:
           Write-Host "Display version: $displayVer"
 
 
-      - name: Build with PyInstaller
+      - name: Build from .spec (onedir)
         shell: pwsh
-        run: |
-          if (Test-Path .\DesktopTileLauncher.spec) {
-            pyinstaller .\DesktopTileLauncher.spec --noupx --clean
-          } else {
-            pyinstaller --onedir --noupx --clean .\tile_launcher.py --name DesktopTileLauncher --icon DesktopTileLauncher.ico --version-file version_info.txt
-          }
+        run: pyinstaller .\DesktopTileLauncher.spec -y --clean
 
         # Add this right before "Upload artifact"
 
