@@ -20,7 +20,7 @@ exe = EXE(
     a.scripts,
     exclude_binaries=True,          # onedir pattern (puts DLLs next to the EXE)
     name='DesktopTileLauncher',
-    console=True,                   # set False to hide console window
+    console=False,                   # set False to hide console window
     icon='DesktopTileLauncher.ico',
     version='version_info.txt',
     upx=False                       # disable UPX here
