@@ -28,3 +28,18 @@ this behavior and may not differentiate between tabs and windows.
 
 Existing configurations that lack this setting are automatically migrated and
 default to opening URLs in a new tab.
+
+## Debugging & Crash Reports
+
+Desktop Tile Launcher writes JSON logs to a rotating `debug.log` in a per-user
+directory:
+
+* **Windows:** `%LOCALAPPDATA%/DesktopTileLauncher/`
+* **macOS:** `~/Library/Logs/DesktopTileLauncher/`
+* **Linux:** `$XDG_STATE_HOME/DesktopTileLauncher/` or
+  `~/.local/state/DesktopTileLauncher/`
+
+The application never sends data over the network.  When something goes wrong,
+use the *Create Crash Bundle* button on the crash dialog to zip the log files
+and a `crash.json` snapshot of runtime context.  Attach this bundle when filing
+a GitHub issue.
