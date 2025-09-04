@@ -338,6 +338,7 @@ class CrashDialog(QDialog):  # pragma: no cover - GUI code
             f"title={title}&body={body}"
         )
 
+
 def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
     """Enable faulthandler in a best‑effort, cross‑platform way."""
     global _FAULTHANDLER_FP
@@ -358,7 +359,11 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
     # Register user/dumper signals when supported.
     for name in ("SIGUSR1", "SIGUSR2", "SIGBREAK"):
         signum = getattr(signal, name, None)
-        if signum is not None and hasattr(faulthandler, "register") and _FAULTHANDLER_FP is not None:
+        if (
+            signum is not None
+            and hasattr(faulthandler, "register")
+            and _FAULTHANDLER_FP is not None
+        ):
             try:
                 faulthandler.register(signum, _FAULTHANDLER_FP)  # type: ignore[attr-defined]
             except Exception:
@@ -376,6 +381,7 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
             except Exception:
                 pass
 
+
 def install_debug_scaffold(
     app: QApplication, app_name: str = "DesktopTileLauncher"
 ) -> None:
@@ -392,7 +398,7 @@ def install_debug_scaffold(
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
-    
+
     if not any(
         isinstance(h, RotatingFileHandler)
         and getattr(h, "baseFilename", None) == str(log_path)
@@ -429,6 +435,7 @@ def install_debug_scaffold(
     # Pipe Qt messages into Python logging only when Qt is present.
     # The hasattr() guard prevents AttributeError when PySide6 isn't installed.
     if callable(qInstallMessageHandler) and hasattr(QtMsgType, "QtDebugMsg"):
+
         def qt_message_handler(
             mode: QtMsgType, context: QMessageLogContext, message: str
         ) -> None:
@@ -447,4 +454,3 @@ def install_debug_scaffold(
         qInstallMessageHandler(qt_message_handler)
 
     record_breadcrumb("app_start")
-
