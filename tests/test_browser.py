@@ -37,7 +37,6 @@ def test_open_tile_uses_specific_browser(monkeypatch):
     assert "--new-tab" in launched["cmd"]  # nosec B101
 
 
-
 def test_open_tile_uses_default_browser(monkeypatch):
     opened: dict[str, str] = {}
 
@@ -60,4 +59,3 @@ def test_open_tile_uses_default_browser(monkeypatch):
     main = Main.__new__(Main)
     main.open_tile(tile)
     assert opened == {"default": "http://example.com"}  # nosec B101
-

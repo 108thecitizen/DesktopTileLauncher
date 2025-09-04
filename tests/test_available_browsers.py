@@ -33,7 +33,6 @@ def test_available_browsers_detects_common_executables(monkeypatch):
     assert "firefox" in browsers  # nosec B101
 
 
-
 def test_available_browsers_detects_safari(monkeypatch):
     """Safari should be detected on macOS when installed."""
 
@@ -47,4 +46,3 @@ def test_available_browsers_detects_safari(monkeypatch):
 
     browsers = available_browsers()
     assert "safari" in browsers  # nosec B101
-

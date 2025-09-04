@@ -25,4 +25,3 @@ from debug_scaffold import sanitize_url
 )
 def test_sanitize_url(raw: str, expected: str) -> None:
     assert sanitize_url(raw) == expected  # nosec B101
-

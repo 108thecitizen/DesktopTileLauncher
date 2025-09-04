@@ -259,7 +259,6 @@ def guess_domain(url: str) -> str:
         netloc = urllib.parse.urlparse(url).netloc
         return netloc.split("@")[-1]  # strip creds if any
     except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         return ""
 
 
@@ -272,11 +271,9 @@ def fetch_favicon(url: str, size: int = 128) -> Optional[Path]:
     try:
         src = f"https://www.google.com/s2/favicons?domain={domain}&sz={size}"
         with urllib.request.urlopen(src, timeout=5) as r, open(out, "wb") as f:  # nosec B310: fixed https endpoint; domain param sanitized upstream
-
             f.write(r.read())
         return out
     except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         return None
 
 
@@ -655,7 +652,7 @@ class Main(QMainWindow):
         if plan.command:
             try:
                 debug_scaffold.last_launch_command = " ".join(plan.command)
-                subprocess.Popen(plan.command, close_fds=True, shell=False)  # nosec B603: command built from internal allowlist; no shell
+                subprocess.Popen(plan.command, close_fds=True)  # nosec B603: command built from internal allowlist; no shell
 
                 record_breadcrumb("launch_result", ok=True, url=url)
                 logger.info(

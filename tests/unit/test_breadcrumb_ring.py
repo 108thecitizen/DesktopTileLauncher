@@ -15,4 +15,3 @@ def test_breadcrumb_ring_limit() -> None:
     assert crumbs[0]["idx"] == 10  # nosec B101
 
     assert crumbs[-1]["idx"] == BREADCRUMB_LIMIT + 9  # nosec B101
-

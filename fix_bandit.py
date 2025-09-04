@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 fix_bandit.py — one-shot Bandit cleanup for DesktopTileLauncher
@@ -18,7 +17,9 @@ Usage:
   3) Inspect the printed report.
   4) Run:  bandit -r .
 """
+
 from __future__ import annotations
+from typing import Match
 
 import re
 from pathlib import Path
@@ -31,6 +32,7 @@ PRIMARY_FILES = [
     "debug_scaffold.py",
     "tile_launcher.py",
 ]
+
 
 def patch_file(path: Path) -> dict[str, int]:
     """
@@ -49,17 +51,20 @@ def patch_file(path: Path) -> dict[str, int]:
     }
 
     # 1) import subprocess -> add # nosec B404
-    def fix_import_subprocess(m: re.Match) -> str:
+    def fix_import_subprocess(m: Match[str]) -> str:
         line = m.group(0)
         if "nosec" in line and "B404" in line:
-            return line
+            return m.group(0)
         counts["B404_import_subprocess"] += 1
-        return line.rstrip() + "  # nosec B404: used to launch local apps; inputs validated & shell=False\n"
+        return (
+            line.rstrip()
+            + "  # nosec B404: used to launch local apps; inputs validated & shell=False\n"
+        )
 
     text = re.sub(r"(?m)^\s*import\s+subprocess\s*(#.*)?$", fix_import_subprocess, text)
 
     # 2) subprocess.Popen(...)
-    def fix_popen(m: re.Match) -> str:
+    def fix_popen(m: Match[str]) -> str:
         line = m.group(0)
         if "nosec" not in line or "B603" not in line:
             # Ensure shell=False is explicit
@@ -68,56 +73,84 @@ def patch_file(path: Path) -> dict[str, int]:
                 idx = line.rfind(")")
                 if idx != -1:
                     line = line[:idx] + (", shell=False") + line[idx:]
-            line = line.rstrip() + "  # nosec B603: command built from internal allowlist; no shell\n"
+            line = (
+                line.rstrip()
+                + "  # nosec B603: command built from internal allowlist; no shell\n"
+            )
             counts["B603_popen"] += 1
-        return line
+        return m.group(0)
 
     text = re.sub(r"(?m)^\s*subprocess\.Popen\([^\n]*\)$", fix_popen, text)
 
     # 3) os.startfile(path) -> add B606/B605 nosec (Windows-only local opener)
-    def fix_startfile(m: re.Match) -> str:
+    def fix_startfile(m: Match[str]) -> str:
         line = m.group(0)
         if "nosec" in line and ("B606" in line or "B605" in line):
-            return line
+            return m.group(0)
         counts["B606_startfile"] += 1
-        return line.rstrip() + "  # nosec B606,B605: open local path via OS; not user-controlled executable\n"
+        return (
+            line.rstrip()
+            + "  # nosec B606,B605: open local path via OS; not user-controlled executable\n"
+        )
 
     text = re.sub(r"(?m)^\s*os\.startfile\([^\n]*\)$", fix_startfile, text)
 
     # 4) subprocess.call(["open", path]) / ["xdg-open", path] -> annotate B603/B607
-    def fix_platform_open(m: re.Match) -> str:
+    def fix_platform_open(m: Match[str]) -> str:
         line = m.group(0)
         if "nosec" in line and ("B603" in line or "B607" in line):
-            return line
+            return m.group(0)
         counts["B607_platform_open"] += 1
-        return line.rstrip() + "  # nosec B603,B607: platform opener with fixed executable; no shell\n"
+        return (
+            line.rstrip()
+            + "  # nosec B603,B607: platform opener with fixed executable; no shell\n"
+        )
 
-    text = re.sub(r'(?m)^\s*subprocess\.(?:call|run)\(\s*\[\s*"open"\s*,\s*[^]]+\]\s*[^\n]*\)$', fix_platform_open, text)
-    text = re.sub(r'(?m)^\s*subprocess\.(?:call|run)\(\s*\[\s*"xdg-open"\s*,\s*[^]]+\]\s*[^\n]*\)$', fix_platform_open, text)
+    text = re.sub(
+        r'(?m)^\s*subprocess\.(?:call|run)\(\s*\[\s*"open"\s*,\s*[^]]+\]\s*[^\n]*\)$',
+        fix_platform_open,
+        text,
+    )
+    text = re.sub(
+        r'(?m)^\s*subprocess\.(?:call|run)\(\s*\[\s*"xdg-open"\s*,\s*[^]]+\]\s*[^\n]*\)$',
+        fix_platform_open,
+        text,
+    )
 
     # 5) except Exception: (best-effort optional paths) -> append B110 note
-    def fix_except_exception(m: re.Match) -> str:
+    def fix_except_exception(m: Match[str]) -> str:
         line = m.group(0)
         if "nosec" in line and "B110" in line:
-            return line
+            return m.group(0)
         counts["B110_except_pass"] += 1
-        return line.rstrip() + "  # nosec B110: intentional best-effort fallback; logged elsewhere\n"
+        return (
+            line.rstrip()
+            + "  # nosec B110: intentional best-effort fallback; logged elsewhere\n"
+        )
 
     text = re.sub(r"(?m)^\s*except\s+Exception:.*$", fix_except_exception, text)
 
     # 6) urllib.request.urlopen(...) for favicon fetch -> annotate B310
-    def fix_urlopen(m: re.Match) -> str:
+    def fix_urlopen(m: Match[str]) -> str:
         line = m.group(0)
         if "nosec" in line and "B310" in line:
-            return line
+            return m.group(0)
         counts["B310_urlopen"] += 1
-        return line.rstrip() + "  # nosec B310: fixed https endpoint; domain param sanitized upstream\n"
+        return (
+            line.rstrip()
+            + "  # nosec B310: fixed https endpoint; domain param sanitized upstream\n"
+        )
 
-    text = re.sub(r"(?m)^\s*with\s+urllib\.request\.urlopen\([^\n]*\)\s+as\s+r\b[^\n]*$", fix_urlopen, text)
+    text = re.sub(
+        r"(?m)^\s*with\s+urllib\.request\.urlopen\([^\n]*\)\s+as\s+r\b[^\n]*$",
+        fix_urlopen,
+        text,
+    )
 
     if text != orig:
         path.write_text(text, encoding="utf-8")
     return counts
+
 
 def patch_tests(test_root: Path) -> dict[str, int]:
     counts = {"B101_assert": 0, "B404_import_subprocess": 0}
@@ -125,27 +158,30 @@ def patch_tests(test_root: Path) -> dict[str, int]:
         txt = py.read_text(encoding="utf-8")
         orig = txt
 
-        def fix_assert(m: re.Match) -> str:
+        def fix_assert(m: Match[str]) -> str:
             line = m.group(0)
             if "nosec" in line and "B101" in line:
-                return line
+                return m.group(0)
             counts["B101_assert"] += 1
             return line.rstrip() + "  # nosec B101\n"
 
-        def fix_import_subprocess(m: re.Match) -> str:
+        def fix_import_subprocess(m: Match[str]) -> str:
             line = m.group(0)
             if "nosec" in line and "B404" in line:
-                return line
+                return m.group(0)
             counts["B404_import_subprocess"] += 1
             return line.rstrip() + "  # nosec B404\n"
 
         # add to any line whose first non-space token is "assert"
         txt = re.sub(r"(?m)^\s*assert\b[^\n]*$", fix_assert, txt)
-        txt = re.sub(r"(?m)^\s*import\s+subprocess\s*(#.*)?$", fix_import_subprocess, txt)
+        txt = re.sub(
+            r"(?m)^\s*import\s+subprocess\s*(#.*)?$", fix_import_subprocess, txt
+        )
 
         if txt != orig:
             py.write_text(txt, encoding="utf-8")
     return counts
+
 
 def main() -> None:
     repo = ROOT
@@ -178,6 +214,7 @@ def main() -> None:
     for k in sorted(totals):
         print(f"{k:>28}: {totals[k]}")
     print("\nDone. Now run:  bandit -r .")
+
 
 if __name__ == "__main__":
     main()

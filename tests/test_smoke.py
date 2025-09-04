@@ -38,4 +38,3 @@ def _import_main_module():
 def test_app_imports_without_errors():
     mod = _import_main_module()
     assert mod is not None  # nosec B101
-

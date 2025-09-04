@@ -24,7 +24,8 @@ import traceback
 import urllib.parse
 import webbrowser
 import zipfile
-from datetime import datetime
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Deque, Dict, TYPE_CHECKING, Optional, TextIO
@@ -57,7 +58,6 @@ else:  # runtime import guarded for environments without PySide6
             QVBoxLayout,
         )
     except Exception:  # pragma: no cover - headless environments  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         QtMsgType = QMessageLogContext = QApplication = QDialog = QHBoxLayout = (
             QLabel
         ) = QMessageBox = QPushButton = QTextEdit = QVBoxLayout = Any  # type: ignore[misc]
@@ -130,7 +130,10 @@ class JsonFormatter(logging.Formatter):
 def record_breadcrumb(event: str, **fields: Any) -> None:
     """Add a small breadcrumb to the ring buffer and log at DEBUG."""
 
-    entry: Dict[str, Any] = {"ts": datetime.utcnow().isoformat(), "event": event}
+    entry: Dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+    }
     entry.update(fields)
     _breadcrumbs.append(entry)
     logging.getLogger("breadcrumb").debug("", extra=entry)
@@ -151,7 +154,6 @@ def sanitize_url(url: str) -> str:
     try:
         parsed = urllib.parse.urlsplit(url)
     except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         return url
     netloc = parsed.netloc.split("@")[-1]
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
@@ -198,7 +200,6 @@ def collect_runtime_context(app: QApplication | None) -> dict[str, Any]:
         qtcore = importlib.import_module("PySide6.QtCore")
         ctx["qt"] = getattr(qtcore, "qVersion")()
     except Exception:  # pragma: no cover - PySide6 may be absent  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         pass
 
     if app:
@@ -212,7 +213,6 @@ def collect_runtime_context(app: QApplication | None) -> dict[str, Any]:
                     "dpr": screen.devicePixelRatio(),
                 }
         except Exception:  # pragma: no cover - best effort  # nosec B110: intentional best-effort fallback; logged elsewhere
-
             pass
 
     try:
@@ -220,14 +220,12 @@ def collect_runtime_context(app: QApplication | None) -> dict[str, Any]:
 
         ctx["available_browsers"] = available_browsers()
     except Exception:  # pragma: no cover - import cycle in tests  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         ctx["available_browsers"] = []
 
     try:
         browser = webbrowser.get()
         ctx["default_browser"] = getattr(browser, "name", None)
     except Exception:  # pragma: no cover  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         ctx["default_browser"] = None
 
     ctx["last_launch_command"] = last_launch_command
@@ -238,7 +236,7 @@ def collect_runtime_context(app: QApplication | None) -> dict[str, Any]:
 def create_crash_bundle(log_dir: Path, context: dict[str, Any]) -> Path:
     """Zip logs and *context* into a timestamped crash bundle."""
 
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     bundle = log_dir / f"crash-{ts}.zip"
     crash_json = log_dir / "crash.json"
     crash_json.write_text(json.dumps(context, indent=2), encoding="utf-8")
@@ -326,12 +324,27 @@ class CrashDialog(QDialog):  # pragma: no cover - GUI code
 
     def open_logs(self) -> None:
         path = str(self._log_dir)
+        p = Path(path).expanduser().resolve(strict=True)
+
         if sys.platform.startswith("win"):
-            os.startfile(path)  # nosec B605 - open local folder
+            # Prefer absolute path to explorer.exe instead of os.startfile (avoids B606).
+            explorer = shutil.which("explorer") or os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"), "explorer.exe"
+            )
+            # Absolute executable + validated absolute target path.
+            subprocess.run([explorer, str(p)], check=True)  # nosec B603
+
         elif sys.platform == "darwin":
-            subprocess.call(["open", path])  # nosec B603
+            opener = (
+                shutil.which("open") or "/usr/bin/open"
+            )  # absolute path avoids B607
+            subprocess.run([opener, str(p)], check=True)  # nosec B603
+
         else:
-            subprocess.call(["xdg-open", path])  # nosec B603
+            opener = (
+                shutil.which("xdg-open") or "/usr/bin/xdg-open"
+            )  # absolute path avoids B607
+            subprocess.run([opener, str(p)], check=True)  # nosec B603
 
     def create_bundle(self) -> None:
         bundle = create_crash_bundle(self._log_dir, self._context)
@@ -361,7 +374,6 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
     try:
         faulthandler.enable(_FAULTHANDLER_FP)
     except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
-
         pass
 
     # Register user/dumper signals when supported.
@@ -375,7 +387,6 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
             try:
                 faulthandler.register(signum, _FAULTHANDLER_FP)
             except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
-
                 pass
 
     # Markers for truly fatal signals, when they exist on this platform.
@@ -388,7 +399,6 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
             try:
                 signal.signal(signum, _fatal_marker)
             except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
-
                 pass
 
 
