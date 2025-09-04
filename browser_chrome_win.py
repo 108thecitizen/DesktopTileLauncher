@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import subprocess  # nosec B404: used to launch local apps; inputs validated & shell=False
+
 import sys
 import typing as t
 from typing import Literal
@@ -147,7 +148,8 @@ def launch_chrome_with_profile(
         if open_target == "window":
             cmd.append("--new-window")
         cmd.append(url)
-        subprocess.Popen(cmd, close_fds=True)
+        subprocess.Popen(cmd, close_fds=True, shell=False)  # nosec B603: command built from internal allowlist; no shell
+
         return True
     except OSError:
         return False

@@ -383,3 +383,5 @@ FodyWeavers.xsd
 *.rej
 *.bak
 run_local.py
+bandit.txt
+bandit.json

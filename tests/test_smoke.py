@@ -24,7 +24,8 @@ def _import_main_module():
         if candidate.exists():
             spec = importlib.util.spec_from_file_location("app_under_test", candidate)
             mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-            assert spec and spec.loader, f"Could not load spec for {candidate}"
+            assert spec and spec.loader, f"Could not load spec for {candidate}"  # nosec B101
+
             spec.loader.exec_module(mod)  # type: ignore[union-attr]
             return mod
 
@@ -36,4 +37,4 @@ def _import_main_module():
 
 def test_app_imports_without_errors():
     mod = _import_main_module()
-    assert mod is not None
+    assert mod is not None  # nosec B101
