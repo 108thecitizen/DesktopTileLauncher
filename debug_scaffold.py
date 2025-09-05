@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Debug and crash handling utilities for DesktopTileLauncher.
 
 This module provides structured JSON logging, a lightweight breadcrumb

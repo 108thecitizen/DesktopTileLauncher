@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Windows-specific helpers for interacting with Google Chrome profiles.
 
 These helpers detect the Windows default browser, locate Chrome installations,

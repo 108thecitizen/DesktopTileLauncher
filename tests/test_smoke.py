@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 import importlib
 import importlib.util
 from pathlib import Path
