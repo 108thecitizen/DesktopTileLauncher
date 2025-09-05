@@ -1,11 +1,11 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 block_cipher = None
 
 a = Analysis(
     ['tile_launcher.py'],
-    pathex=[],
+    pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[('LICENSE','.'), ('LICENSE-MIT','.'), ('NOTICE','.')],
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
@@ -18,12 +18,18 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    exclude_binaries=True,          # onedir pattern (puts DLLs next to the EXE)
+    [],
+    exclude_binaries=True,          # onedir pattern (DLLs next to the EXE)
     name='DesktopTileLauncher',
-    console=False,                   # set False to hide console window
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    console=False,                   # GUI app: hide console
+    disable_windowed_traceback=False,
     icon='DesktopTileLauncher.ico',
     version='version_info.txt',
-    upx=False                       # disable UPX here
+    upx=False,                       # disable UPX here
+    uac_admin=False
 )
 
 coll = COLLECT(
