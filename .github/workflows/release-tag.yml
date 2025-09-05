@@ -110,32 +110,36 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ steps.tag.outputs.value }}"
-          $exe = (Get-ChildItem -Recurse -File dist -Filter *.exe | Select-Object -First 1).FullName
-          if (-not $exe) { throw "No exe found under dist" }
-          $dir = Split-Path $exe -Parent
+          $exe = Get-ChildItem -Recurse -File dist -Filter DesktopTileLauncher.exe | Select-Object -First 1
+          if (-not $exe) { throw "No DesktopTileLauncher.exe found under dist" }
+          $dir = Split-Path $exe.FullName -Parent
           $dst = Join-Path $dir ("DesktopTileLauncher-" + $tag + ".exe")
-          Move-Item -Force $exe $dst
+          Move-Item -Force $exe.FullName $dst
 
-      - name: Generate checksums
+      # Create the versioned onedir ZIP *before* checksums and release
+      - name: Zip onedir output (versioned)
         shell: pwsh
         run: |
-          $exe = Get-ChildItem -Recurse -File dist -Filter "DesktopTileLauncher-*.exe" | Select-Object -First 1
-          $hash = Get-FileHash $exe.FullName -Algorithm SHA256
-          "$($hash.Hash)  $($exe.Name)" | Out-File -Encoding ascii -FilePath dist\SHA256SUMS.txt
+          $tag = "${{ steps.tag.outputs.value }}"
+          $dist = Join-Path 'dist' 'DesktopTileLauncher'
+          if (!(Test-Path $dist)) { throw "Expected output folder not found: $dist" }
+          $zip = Join-Path 'dist' ("DesktopTileLauncher-" + $tag + "-onedir-win-x64.zip")
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          # Zip the contents so DesktopTileLauncher.exe sits at the ZIP root
+          Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip
 
-      - name: Update release with checksums
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.value }}
-          files: |
-            dist/**/DesktopTileLauncher-*.exe
-            dist/**/SHA256SUMS.txt
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: DesktopTileLauncher-${{ steps.tag.outputs.value }}
-          path: dist/**/DesktopTileLauncher-*.exe
+      - name: Generate checksums (EXE + ZIP)
+        shell: pwsh
+        run: |
+          $targets = Get-ChildItem dist -Recurse -File -Include `
+            "DesktopTileLauncher-*.exe","DesktopTileLauncher-*-onedir-win-x64.zip"
+          if (-not $targets) { throw "Nothing to hash under dist" }
+          $out = Join-Path 'dist' 'SHA256SUMS.txt'
+          $content = foreach ($t in $targets) {
+            $h = Get-FileHash $t.FullName -Algorithm SHA256
+            "$($h.Hash) $($t.Name)"
+          }
+          $content -join "`r`n" | Out-File -Encoding ascii -FilePath $out
 
       - name: List release payload
         shell: pwsh
@@ -146,6 +150,7 @@ jobs:
           if (Test-Path LICENSE) { Get-Item LICENSE | Format-List }
           if (Test-Path LICENSE.md) { Get-Item LICENSE.md | Format-List }
 
+      # Single, consolidated release step: create/update the release and upload all assets
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -156,8 +161,15 @@ jobs:
             dist/**/DesktopTileLauncher-*.exe
             dist/**/DesktopTileLauncher-*-onedir-win-x64.zip
             dist/**/SHA256SUMS.txt
-            LICENSE*                                  # <-- handles LICENSE and LICENSE.md
+            LICENSE*                                  # handles LICENSE and LICENSE.md
           fail_on_unmatched_files: false
 
-
-
+      # Optional: also store the build outputs as an Actions artifact for debugging/retention
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DesktopTileLauncher-${{ steps.tag.outputs.value }}
+          path: |
+            dist/**/DesktopTileLauncher-*.exe
+            dist/**/DesktopTileLauncher-*-onedir-win-x64.zip
+            dist/**/SHA256SUMS.txt
