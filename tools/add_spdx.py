@@ -6,6 +6,7 @@ from pathlib import Path
 SPDX = "# SPDX-License-Identifier: Apache-2.0\n"
 CODING_RE = re.compile(rb"^#.*coding[:=]\s*([-\w.]+)")
 
+
 def add_spdx(path: Path):
     data = path.read_bytes()
     lines = data.splitlines(keepends=True)
@@ -31,13 +32,26 @@ def add_spdx(path: Path):
     path.write_bytes(new)
     return True
 
+
 def main(root: Path):
     changed = 0
     for p in root.rglob("*.py"):
-        if any(seg in p.parts for seg in (".git","dist","build",".venv","venv","__pycache__",".pytest_cache")):
+        if any(
+            seg in p.parts
+            for seg in (
+                ".git",
+                "dist",
+                "build",
+                ".venv",
+                "venv",
+                "__pycache__",
+                ".pytest_cache",
+            )
+        ):
             continue
         changed += 1 if add_spdx(p) else 0
     print(f"SPDX headers added to {changed} file(s).")
+
 
 if __name__ == "__main__":
     main(Path(sys.argv[1] if len(sys.argv) > 1 else "."))
