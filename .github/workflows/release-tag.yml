@@ -1,4 +1,4 @@
-﻿name: release-on-tag
+name: release-on-tag
 
 on:
   push:
@@ -137,6 +137,15 @@ jobs:
           name: DesktopTileLauncher-${{ steps.tag.outputs.value }}
           path: dist/**/DesktopTileLauncher-*.exe
 
+      - name: List release payload
+        shell: pwsh
+        run: |
+          Write-Host "Files under dist:"
+          Get-ChildItem dist -Recurse -File | Select-Object FullName
+          Write-Host "License at repo root (if any):"
+          if (Test-Path LICENSE) { Get-Item LICENSE | Format-List }
+          if (Test-Path LICENSE.md) { Get-Item LICENSE.md | Format-List }
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -145,8 +154,10 @@ jobs:
           generate_release_notes: true
           files: |
             dist/**/DesktopTileLauncher-*.exe
-            LICENSE.md
-          fail_on_unmatched_files: true
+            dist/**/DesktopTileLauncher-*-onedir-win-x64.zip
+            dist/**/SHA256SUMS.txt
+            LICENSE*                                  # <-- handles LICENSE and LICENSE.md
+          fail_on_unmatched_files: false
 
 
 
