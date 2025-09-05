@@ -4,7 +4,11 @@
 [![Release](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml/badge.svg)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml)
 
 
-License: MIT
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for details.  
+Prior releases were MIT; the text is preserved in [LICENSE-MIT](./LICENSE-MIT).  
+SPDX-License-Identifier: Apache-2.0
 
 ## Usage
 
