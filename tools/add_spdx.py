@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-﻿import sys, re
+import re
+import sys
 from pathlib import Path
 
 SPDX = "# SPDX-License-Identifier: Apache-2.0\n"
