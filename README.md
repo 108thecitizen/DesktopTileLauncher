@@ -61,6 +61,10 @@ Prior releases were MIT; the text is preserved in [LICENSE-MIT](./LICENSE-MIT).
 SPDX-License-Identifier: Apache-2.0
 
 ## Usage
+### Add tiles
+
+- Use the **Add** button on the toolbar.
+- Right-click whitespace within a tab and choose **Add Tile…**.
 
 On Windows, selecting Google Chrome for a tile (or leaving the browser as
 Default when Chrome is the system default) reveals a **Chrome profile**
