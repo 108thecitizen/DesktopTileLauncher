@@ -3,7 +3,7 @@
 **Purpose**  
 This repository uses AI‑assisted code generation. This document binds any code‑generating agent (e.g., Codex) to non‑negotiable quality gates and *safe* test execution rules. Whenever the agent adds or edits Python, it MUST keep the repo in a state where the gates below **run** and **pass** cleanly.
 
-> This version keeps your existing gates—Ruff (format + lint), mypy, pytest—and your “types‑first, minimal ignores” guidance, while adding: (1) a **unit‑only** test contract that avoids Qt/GL/GUI, and (2) explicit Ruff coverage of all Python files under `tests/`. :contentReference[oaicite:1]{index=1}
+> This version keeps your existing gates—Ruff (format + lint), mypy, pytest—and your “types‑first, minimal ignores” guidance, while adding: (1) a **unit‑only** test contract that avoids Qt/GL/GUI, and (2) explicit Ruff coverage of all Python files under `tests/`.
 
 ---
 
