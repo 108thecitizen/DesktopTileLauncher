@@ -21,13 +21,23 @@ from pathlib import Path
 from typing import Callable, Literal, Optional, cast
 import shutil
 
-from PySide6.QtCore import QMimeData, QPoint, QSize, Qt, QTimer, qWarning
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QMimeData,
+    QPoint,
+    QSize,
+    Qt,
+    QTimer,
+    qWarning,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
     QDrag,
     QDragEnterEvent,
     QDropEvent,
+    QContextMenuEvent,
     QFont,
     QIcon,
     QMouseEvent,
@@ -513,6 +523,8 @@ class Main(QMainWindow):
         )
         self.setCentralWidget(self.tabs_widget)
 
+        self._tab_viewports: set[QWidget] = set()
+
         self.rebuild()
 
     # -------- UI building --------
@@ -523,6 +535,7 @@ class Main(QMainWindow):
     def rebuild(self) -> None:
         self.tabs_widget.clear()
         self._grids: dict[str, QGridLayout] = {}
+        self._tab_viewports.clear()
         for tab in self.cfg.tabs:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -531,6 +544,7 @@ class Main(QMainWindow):
             grid.setSpacing(12)
             grid.setContentsMargins(16, 16, 16, 16)
             scroll.setWidget(container)
+            self._wire_tab_whitespace_menu(scroll)
             self.tabs_widget.addTab(scroll, tab)
             self._grids[tab] = grid
             self._populate_tab(tab)
@@ -569,6 +583,37 @@ class Main(QMainWindow):
             if c >= cols:
                 c = 0
                 r += 1
+
+    def _wire_tab_whitespace_menu(self, scroll: QScrollArea) -> None:
+        """Install a context menu handler on the scroll area's viewport."""
+        vp = scroll.viewport()
+        vp.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
+        vp.installEventFilter(self)
+        self._tab_viewports.add(vp)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.ContextMenu and obj in self._tab_viewports:
+            cme = cast(QContextMenuEvent, event)
+            global_pos = cast(QWidget, obj).mapToGlobal(cme.pos())
+            if not self._is_over_tile(global_pos):
+                self._show_whitespace_menu(global_pos)
+                return True
+            return False
+        return super().eventFilter(obj, event)
+
+    def _is_over_tile(self, global_pos: QPoint) -> bool:
+        w = QApplication.widgetAt(global_pos)
+        while w:
+            if isinstance(w, TileButton):
+                return True
+            w = w.parentWidget()
+        return False
+
+    def _show_whitespace_menu(self, global_pos: QPoint) -> None:
+        menu = QMenu(self)
+        act = menu.addAction("Add Tile…")
+        act.triggered.connect(lambda: self.add_tile(self.current_tab()))
+        menu.exec(global_pos)
 
     def resize_to_fit_tiles(self) -> None:
         cols = max(1, int(self.cfg.columns))
@@ -716,7 +761,7 @@ class Main(QMainWindow):
         self.cfg.save()
         self._populate_tab(tab)
 
-    def add_tile(self) -> None:
+    def add_tile(self, default_tab: str | None = None) -> None:
         dlg = TileEditorDialog(
             tabs=self.cfg.tabs,
             browsers=available_browsers(),
@@ -724,6 +769,10 @@ class Main(QMainWindow):
             fetch_favicon=fetch_favicon,
             parent=self,
         )
+        tab_name = default_tab or self.current_tab()
+        idx = dlg.tab_combo.findText(tab_name, Qt.MatchFlag.MatchExactly)
+        if idx >= 0:
+            dlg.tab_combo.setCurrentIndex(idx)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.data:
             data = dlg.data
             self.cfg.tiles.append(
