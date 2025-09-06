@@ -51,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 import debug_scaffold
-from debug_scaffold import record_breadcrumb, sanitize_url
+from debug_scaffold import record_breadcrumb, sanitize_log_extra, sanitize_url
 from tile_editor_dialog import TileEditorDialog
 from browser_chrome_win import (
     is_windows_default_browser_chrome,
@@ -627,15 +627,17 @@ class Main(QMainWindow):
         )
         logger.info(
             "browser_launch_attempt",
-            extra={
-                "event": "browser_launch_attempt",
-                "browser": plan.browser_name or "default",
-                "flags": plan.command[1:-1] if plan.command else [],
-                "profile": plan.profile,
-                "url": url,
-                "platform": sys.platform,
-                "pid": os.getpid(),
-            },
+            extra=sanitize_log_extra(
+                {
+                    "event": "browser_launch_attempt",
+                    "browser": plan.browser_name or "default",
+                    "flags": plan.command[1:-1] if plan.command else [],
+                    "profile": plan.profile,
+                    "url": url,
+                    "platform": sys.platform,
+                    "pid": os.getpid(),
+                }
+            ),
         )
         profile = tile.chrome_profile
         if profile and _tile_uses_chrome(tile):
@@ -643,7 +645,9 @@ class Main(QMainWindow):
                 record_breadcrumb("launch_result", ok=True, url=url)
                 logger.info(
                     "browser_launch_result",
-                    extra={"event": "browser_launch_result", "ok": True},
+                    extra=sanitize_log_extra(
+                        {"event": "browser_launch_result", "ok": True}
+                    ),
                 )
                 return
             qWarning(
@@ -657,17 +661,21 @@ class Main(QMainWindow):
                 record_breadcrumb("launch_result", ok=True, url=url)
                 logger.info(
                     "browser_launch_result",
-                    extra={"event": "browser_launch_result", "ok": True},
+                    extra=sanitize_log_extra(
+                        {"event": "browser_launch_result", "ok": True}
+                    ),
                 )
                 return
             except OSError as exc:
                 logger.error(
                     "browser_launch_result",
-                    extra={
-                        "event": "browser_launch_result",
-                        "ok": False,
-                        "error": str(exc),
-                    },
+                    extra=sanitize_log_extra(
+                        {
+                            "event": "browser_launch_result",
+                            "ok": False,
+                            "error": str(exc),
+                        }
+                    ),
                 )
                 qWarning("Failed to launch command; falling back.")
         try:
@@ -678,17 +686,21 @@ class Main(QMainWindow):
             record_breadcrumb("launch_result", ok=True, url=url)
             logger.info(
                 "browser_launch_result",
-                extra={"event": "browser_launch_result", "ok": True},
+                extra=sanitize_log_extra(
+                    {"event": "browser_launch_result", "ok": True}
+                ),
             )
         except webbrowser.Error as exc:
             record_breadcrumb("launch_result", ok=False, url=url)
             logger.error(
                 "browser_launch_result",
-                extra={
-                    "event": "browser_launch_result",
-                    "ok": False,
-                    "error": str(exc),
-                },
+                extra=sanitize_log_extra(
+                    {
+                        "event": "browser_launch_result",
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                ),
             )
             webbrowser.open(tile.url, new=plan.new or 0)
 

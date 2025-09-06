@@ -128,6 +128,36 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+_RESERVED_LOG_KEYS: set[str] = set(logging.makeLogRecord({}).__dict__.keys()) | {
+    "message"
+}
+
+
+def sanitize_log_extra(extra: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return *extra* with reserved ``LogRecord`` keys renamed.
+
+    Collisions are handled as follows:
+    ``name`` -> ``tile_name``, ``message`` -> ``event_message`` and all other
+    reserved keys are prefixed with ``extra_``.
+    """
+
+    if not extra:
+        return None
+
+    sanitized: dict[str, Any] = {}
+    for key, value in extra.items():
+        if key in _RESERVED_LOG_KEYS:
+            if key == "name":
+                sanitized["tile_name"] = value
+            elif key == "message":
+                sanitized["event_message"] = value
+            else:
+                sanitized[f"extra_{key}"] = value
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 def record_breadcrumb(event: str, **fields: Any) -> None:
     """Add a small breadcrumb to the ring buffer and log at DEBUG."""
 
@@ -137,7 +167,7 @@ def record_breadcrumb(event: str, **fields: Any) -> None:
     }
     entry.update(fields)
     _breadcrumbs.append(entry)
-    logging.getLogger("breadcrumb").debug("", extra=entry)
+    logging.getLogger("breadcrumb").debug("", extra=sanitize_log_extra(entry))
 
 
 def get_breadcrumbs() -> list[dict[str, Any]]:
@@ -272,13 +302,15 @@ class CrashDialog(QDialog):  # pragma: no cover - GUI code
 
         logging.getLogger(__name__).error(
             "Uncaught exception",
-            extra={
-                "event": "uncaught_exception",
-                "exc_type": type(exc).__name__,
-                "exc_msg": summary,
-                "trace": trace,
-                "context": context,
-            },
+            extra=sanitize_log_extra(
+                {
+                    "event": "uncaught_exception",
+                    "exc_type": type(exc).__name__,
+                    "exc_msg": summary,
+                    "trace": trace,
+                    "context": context,
+                }
+            ),
         )
 
         layout = QVBoxLayout(self)
@@ -392,7 +424,10 @@ def _try_setup_faulthandler(log_dir: Path, logger: logging.Logger) -> None:
 
     # Markers for truly fatal signals, when they exist on this platform.
     def _fatal_marker(signum: int, _frame: Any) -> None:
-        logger.error("fatal_signal", extra={"event": "fatal_signal", "signal": signum})
+        logger.error(
+            "fatal_signal",
+            extra=sanitize_log_extra({"event": "fatal_signal", "signal": signum}),
+        )
 
     for name in ("SIGSEGV", "SIGABRT"):
         signum = getattr(signal, name, None)
@@ -448,7 +483,9 @@ def install_debug_scaffold(
 
     def unraisable_hook(args: sys.UnraisableHookArgs) -> None:
         root_logger.warning(
-            "Unraisable exception: %s", args.exc_value, extra={"event": "unraisable"}
+            "Unraisable exception: %s",
+            args.exc_value,
+            extra=sanitize_log_extra({"event": "unraisable"}),
         )
 
     sys.unraisablehook = unraisable_hook
