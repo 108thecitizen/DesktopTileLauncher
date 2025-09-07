@@ -7,11 +7,11 @@ SHELL := bash
 VENV ?= .venv
 ifeq ($(OS),Windows_NT)
   PY := $(VENV)/Scripts/python.exe
-  PIP := $(VENV)/Scripts/pip.exe
 else
   PY := $(VENV)/bin/python
-  PIP := $(VENV)/bin/pip
 endif
+# Always drive pip via the interpreter so self‑upgrade works on Windows too
+PIP := $(PY) -m pip
 PYTEST := $(PY) -m pytest
 
 help: ## List available targets
