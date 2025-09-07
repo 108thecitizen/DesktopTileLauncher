@@ -2,7 +2,8 @@
 
 SHELL := bash
 
-.PHONY: help venv install-dev lint typecheck format test test_unit clean
+.PHONY: default
+default: test_unit
 
 VENV ?= .venv
 ifeq ($(OS),Windows_NT)
