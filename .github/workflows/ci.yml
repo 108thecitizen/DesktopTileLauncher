@@ -1,33 +1,31 @@
-# .github/workflows/ci.yml
-name: lint-and-test
+name: lint-and-typecheck
+
 on:
-  pull_request:
   push:
     branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  python:
+  lint-and-typecheck:
     runs-on: ubuntu-latest
-    strategy:
-      matrix: { python-version: ['3.12'] }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-      - name: Install deps
-        run: |
-          python -m pip install -U pip
-          pip install -r requirements.txt
-          pip install ruff mypy pytest
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+      - name: Install dev deps via Makefile
+        run: make install-dev
       - name: Ruff (lint)
-        run: ruff check .
+        run: make lint
       - name: Ruff (format check)
-        run: ruff format --check .
+        run: .venv/bin/python -m ruff format --check .
       - name: Type-check (mypy)
-        run: mypy --ignore-missing-imports .
-      - name: Tests
-        env:
-          PYTHONPATH: .
-        run: python -m pytest -q
-
+        run: make typecheck
