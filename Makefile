@@ -1,4 +1,7 @@
 # Makefile — DesktopTileLauncher
+
+SHELL := bash
+
 .PHONY: help venv install-dev lint typecheck format test test_unit clean
 
 VENV ?= .venv
