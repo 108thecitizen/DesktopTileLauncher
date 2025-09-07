@@ -26,6 +26,6 @@ jobs:
       - name: Ruff (lint)
         run: make lint
       - name: Ruff (format check)
-        run: .venv/bin/python -m ruff format --check .
+        run: make format-check
       - name: Type-check (mypy)
         run: make typecheck
