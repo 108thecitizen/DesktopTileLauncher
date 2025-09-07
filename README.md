@@ -84,6 +84,10 @@ system's default browser, Python's `webbrowser.open` is used with `new=2` for a
 tab or `new=1` for a window. Safari and other unknown browsers fall back to
 this behavior and may not differentiate between tabs and windows.
 
+On Windows when the chosen browser is Chrome (either explicitly or because it's
+the system default), the launcher invokes Chrome's command-line interface to
+ensure "New browser window" always opens a separate top-level window.
+
 Existing configurations that lack this setting are automatically migrated and
 default to opening URLs in a new tab.
 

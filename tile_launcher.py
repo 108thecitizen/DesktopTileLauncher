@@ -669,6 +669,15 @@ class Main(QMainWindow):
             name=tile.name,
             url=url,
             browser=plan.browser_name or "default",
+            open_target=plan.open_target,
+        )
+        record_breadcrumb(
+            "launch_plan",
+            browser=plan.browser_name or "default",
+            open_target=plan.open_target,
+            command=plan.command,
+            controller=plan.controller,
+            new=plan.new,
         )
         logger.info(
             "browser_launch_attempt",
@@ -678,15 +687,36 @@ class Main(QMainWindow):
                     "browser": plan.browser_name or "default",
                     "flags": plan.command[1:-1] if plan.command else [],
                     "profile": plan.profile,
+                    "open_target": plan.open_target,
                     "url": url,
                     "platform": sys.platform,
                     "pid": os.getpid(),
                 }
             ),
         )
-        profile = tile.chrome_profile
-        if profile and _tile_uses_chrome(tile):
-            if launch_chrome_with_profile(tile.url, profile, tile.open_target):
+
+        if sys.platform == "win32" and _tile_uses_chrome(tile):
+            profile_dir = tile.chrome_profile or "Default"
+            ok = False
+            try:
+                ok = launch_chrome_with_profile(tile.url, profile_dir, plan.open_target)
+            except OSError as exc:
+                record_breadcrumb(
+                    "launch_path",
+                    path="chrome_profile_cli",
+                    browser=plan.browser_name or "default",
+                    open_target=plan.open_target,
+                    profile=profile_dir,
+                    error=str(exc),
+                )
+            if ok:
+                record_breadcrumb(
+                    "launch_path",
+                    path="chrome_profile_cli",
+                    browser=plan.browser_name or "default",
+                    open_target=plan.open_target,
+                    profile=profile_dir,
+                )
                 record_breadcrumb("launch_result", ok=True, url=url)
                 logger.info(
                     "browser_launch_result",
@@ -695,14 +725,26 @@ class Main(QMainWindow):
                     ),
                 )
                 return
-            qWarning(
-                f"Chrome not found or failed to launch with profile '{profile}'; falling back."
+            record_breadcrumb(
+                "launch_path",
+                path="chrome_profile_cli",
+                browser=plan.browser_name or "default",
+                open_target=plan.open_target,
+                profile=profile_dir,
+                fallback=True,
             )
+
         if plan.command:
             try:
                 debug_scaffold.last_launch_command = " ".join(plan.command)
-                subprocess.Popen(plan.command, close_fds=True)  # nosec B603: command built from internal allowlist; no shell
-
+                subprocess.Popen(plan.command, close_fds=True, shell=False)  # nosec B603: command built from internal allowlist; no shell
+                record_breadcrumb(
+                    "launch_path",
+                    path="browser_cli",
+                    browser=plan.browser_name or "default",
+                    open_target=plan.open_target,
+                    cmd=plan.command,
+                )
                 record_breadcrumb("launch_result", ok=True, url=url)
                 logger.info(
                     "browser_launch_result",
@@ -712,6 +754,14 @@ class Main(QMainWindow):
                 )
                 return
             except OSError as exc:
+                record_breadcrumb(
+                    "launch_path",
+                    path="browser_cli",
+                    browser=plan.browser_name or "default",
+                    open_target=plan.open_target,
+                    cmd=plan.command,
+                    error=str(exc),
+                )
                 logger.error(
                     "browser_launch_result",
                     extra=sanitize_log_extra(
@@ -722,12 +772,21 @@ class Main(QMainWindow):
                         }
                     ),
                 )
-                qWarning("Failed to launch command; falling back.")
+
+        controller_name = plan.controller or "default"
         try:
-            if plan.controller and plan.controller != "default":
-                webbrowser.get(plan.controller).open(tile.url, new=plan.new or 0)
+            if controller_name != "default":
+                webbrowser.get(controller_name).open(tile.url, new=plan.new or 0)
             else:
                 webbrowser.open(tile.url, new=plan.new or 0)
+            record_breadcrumb(
+                "launch_path",
+                path="webbrowser",
+                browser=plan.browser_name or "default",
+                open_target=plan.open_target,
+                controller=controller_name,
+                new=plan.new or 0,
+            )
             record_breadcrumb("launch_result", ok=True, url=url)
             logger.info(
                 "browser_launch_result",
@@ -736,6 +795,15 @@ class Main(QMainWindow):
                 ),
             )
         except webbrowser.Error as exc:
+            record_breadcrumb(
+                "launch_path",
+                path="webbrowser",
+                browser=plan.browser_name or "default",
+                open_target=plan.open_target,
+                controller=controller_name,
+                new=plan.new or 0,
+                error=str(exc),
+            )
             record_breadcrumb("launch_result", ok=False, url=url)
             logger.error(
                 "browser_launch_result",
@@ -747,7 +815,12 @@ class Main(QMainWindow):
                     }
                 ),
             )
-            webbrowser.open(tile.url, new=plan.new or 0)
+            parent = self if isinstance(self, QWidget) else None
+            QMessageBox.warning(
+                parent,
+                "Failed to launch browser",
+                f"Could not open {url} in {controller_name}.",
+            )
 
     def move_tile(self, tab: str, from_idx: int, to_idx: int) -> None:
         if from_idx == to_idx:
