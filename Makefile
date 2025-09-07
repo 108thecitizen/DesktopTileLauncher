@@ -33,6 +33,9 @@ lint: venv ## Run ruff checks
 
 format: venv ## Format with ruff
 	$(PY) -m ruff format .
+	
+format-check: venv ## Verify formatting with ruff
+	$(PY) -m ruff format --check .
 
 typecheck: venv ## Run mypy
 	$(PY) -m mypy .
