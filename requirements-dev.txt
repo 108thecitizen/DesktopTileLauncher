@@ -1,0 +1,7 @@
+# Testing
+pytest>=8.2,<9
+pytest-mock>=3.14,<4
+
+# Linting / Typing (present or planned in Makefile)
+ruff>=0.5,<1
+mypy>=1.10,<2

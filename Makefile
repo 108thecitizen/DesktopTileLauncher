@@ -1,6 +1,7 @@
 # Makefile — DesktopTileLauncher
 
 SHELL := bash
+.RECIPEPREFIX := >
 
 .PHONY: default
 default: test_unit
@@ -16,38 +17,43 @@ PIP := $(PY) -m pip
 PYTEST := $(PY) -m pytest
 
 help: ## List available targets
-	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "%-14s %s\n", $$1, $$2}'
+> @grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "%-14s %s\n", $$1, $$2}'
 
-$(PY):
-	python -m venv $(VENV)
+.PHONY: venv
+venv: ## Create virtualenv if missing
+> @if [ ! -e "$(VENV)" ]; then python -m venv "$(VENV)"; fi
+> $(PIP) install -U pip setuptools wheel
 
-venv: $(PY) ## Create a local virtualenv
-
+.PHONY: install-dev
 install-dev: venv ## Install runtime + dev dependencies
-	$(PIP) install -U pip wheel
-	@if [ -f requirements.txt ]; then $(PIP) install -r requirements.txt; fi
-	$(PIP) install -U pytest ruff mypy
+> @if [ -f requirements.txt ]; then $(PIP) install -r requirements.txt; fi
+> @if [ -f requirements-dev.txt ]; then \
+>   $(PIP) install -r requirements-dev.txt; \
+> else \
+>   $(PIP) install pytest ruff mypy; \
+> fi
 
-lint: venv ## Run ruff checks
-	$(PY) -m ruff check .
+lint: install-dev ## Run ruff checks
+> $(PY) -m ruff check .
 
-format: venv ## Format with ruff
-	$(PY) -m ruff format .
-	
-format-check: venv ## Verify formatting with ruff
-	$(PY) -m ruff format --check .
+format: install-dev ## Format with ruff
+> $(PY) -m ruff format .
 
-typecheck: venv ## Run mypy
-	$(PY) -m mypy .
+format-check: install-dev ## Verify formatting with ruff
+> $(PY) -m ruff format --check .
 
-test: venv ## Run the full test suite (default)
-	$(PYTEST) -q
+typecheck: install-dev ## Run mypy
+> $(PY) -m mypy .
+
+test: install-dev ## Run the full test suite (default)
+> $(PYTEST) -q
 
 # Exact unit-only filter you used successfully:
-test_unit: venv ## Run unit tests only (exclude slow/integration/e2e/etc.)
-	$(PYTEST) -q \
-	  -m 'unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)' \
-	  -k 'not multi_window and not tray and not lazy_refresh'
+test_unit: install-dev ## Run unit tests only (exclude slow/integration/e2e/etc.)
+> $(PYTEST) -q \
+>   -m 'unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)' \
+>   -k 'not multi_window and not tray and not lazy_refresh'
 
 clean: ## Remove caches and build artifacts
-	rm -rf $(VENV) build dist .pytest_cache .ruff_cache .mypy_cache **/__pycache__
+> rm -rf $(VENV) build dist .pytest_cache .ruff_cache .mypy_cache **/__pycache__
+
