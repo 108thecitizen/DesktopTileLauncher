@@ -193,6 +193,30 @@ def available_browsers() -> list[str]:
     return sorted(browsers)
 
 
+def _resolve_controller_exe(name: str) -> str | None:
+    """Return an absolute executable path for a registered webbrowser *name*.
+
+    Prefers the controller's recorded executable (if BackgroundBrowser was used)
+    and falls back to PATH lookup. Returns None if not resolvable.
+    """
+    try:
+        ctrl = webbrowser.get(name)
+    except webbrowser.Error:
+        return None
+
+    exe = getattr(ctrl, "name", None)
+    if isinstance(exe, str) and os.path.isabs(exe) and os.path.isfile(exe):
+        return exe
+
+    if isinstance(exe, str):
+        found = shutil.which(exe)
+        if found:
+            return found
+
+    found = shutil.which(name)
+    return found or None
+
+
 def _normalize_url(raw: str) -> str:
     """Ensure the URL has a scheme; if missing, prepend https://."""
     s = (raw or "").strip()
@@ -480,29 +504,36 @@ def build_launch_plan(tile: Tile) -> LaunchPlan:
     target = getattr(tile, "open_target", "tab")
     if tile.browser:
         lowered = tile.browser.lower()
+        exe_resolved = _resolve_controller_exe(tile.browser)
+        exe = exe_resolved or tile.browser
+        record_breadcrumb("launch_exe_resolved", exe=exe, browser=tile.browser)
+
         if "chrome" in lowered or "edge" in lowered:
-            args = [tile.browser]
-            if tile.chrome_profile:
+            args = [exe]
+            if tile.chrome_profile and "chrome" in lowered:
                 args.append(f"--profile-directory={tile.chrome_profile}")
             if target == "window":
                 args.append("--new-window")
             args.append(tile.url)
             return LaunchPlan(
-                tile.browser, target, tile.chrome_profile, args, None, None
+                tile.browser, target, tile.chrome_profile, args, tile.browser, None
             )
+
         if "firefox" in lowered:
             args = [
-                tile.browser,
+                exe,
                 "--new-window" if target == "window" else "--new-tab",
                 tile.url,
             ]
             return LaunchPlan(
-                tile.browser, target, tile.chrome_profile, args, None, None
+                tile.browser, target, tile.chrome_profile, args, tile.browser, None
             )
+
         new_flag = 1 if target == "window" else 2
         return LaunchPlan(
             tile.browser, target, tile.chrome_profile, None, tile.browser, new_flag
         )
+
     new_flag = 1 if target == "window" else 2
     return LaunchPlan(None, target, tile.chrome_profile, None, "default", new_flag)
 
@@ -850,12 +881,20 @@ class Main(QMainWindow):
                     ),
                 )
 
-        controller_name = plan.controller or "default"
+        controller_name = plan.controller or getattr(tile, "browser", None) or "default"
+        record_breadcrumb("launch_fallback_controller", controller=controller_name)
         try:
-            if controller_name != "default":
-                webbrowser.get(controller_name).open(tile.url, new=plan.new or 0)
+            browser_obj = (
+                webbrowser.get(controller_name)
+                if controller_name != "default"
+                else webbrowser.get()
+            )
+            if (plan.new or 0) == 2 and hasattr(browser_obj, "open_new_tab"):
+                browser_obj.open_new_tab(tile.url)
+            elif (plan.new or 0) == 1 and hasattr(browser_obj, "open_new"):
+                browser_obj.open_new(tile.url)
             else:
-                webbrowser.open(tile.url, new=plan.new or 0)
+                browser_obj.open(tile.url, new=plan.new or 0)
             record_breadcrumb(
                 "launch_path",
                 path="webbrowser",
