@@ -47,7 +47,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
+    QDialogButtonBox,
     QGridLayout,
     QInputDialog,
     QMainWindow,
@@ -57,6 +59,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QToolBar,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -217,6 +220,7 @@ class LauncherConfig:
     columns: int = 5
     tiles: list["Tile"] = field(default_factory=list)
     tabs: list[str] = field(default_factory=lambda: ["Main"])
+    hidden_tabs: list[str] = field(default_factory=list)
 
     @staticmethod
     def load():
@@ -228,11 +232,18 @@ class LauncherConfig:
             for t in tiles:
                 if t.tab not in tabs:
                     tabs.append(t.tab)
+            hidden_raw = data.get("hidden_tabs") or []
+            hidden_tabs = [
+                t
+                for t in hidden_raw
+                if isinstance(t, str) and t in tabs and t != "Main"
+            ]
             return LauncherConfig(
                 title=data.get("title", "Launcher"),
                 columns=data.get("columns", 5),
                 tiles=tiles,
                 tabs=tabs,
+                hidden_tabs=hidden_tabs,
             )
         # first run – create a friendly default
         cfg = LauncherConfig(
@@ -244,6 +255,7 @@ class LauncherConfig:
                 Tile("Notion", "https://www.notion.so"),
             ],
             tabs=["Main"],
+            hidden_tabs=[],
         )
         cfg.save()
         return cfg
@@ -260,6 +272,7 @@ class LauncherConfig:
             "columns": self.columns,
             "tiles": tiles,
             "tabs": self.tabs,
+            "hidden_tabs": self.hidden_tabs,
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -308,6 +321,36 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
     p.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, ch)
     p.end()
     return QIcon(pix)
+
+
+class TabVisibilityDialog(QDialog):
+    def __init__(
+        self,
+        tabs: list[str],
+        hidden: list[str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Manage Tab Visibility")
+        layout = QVBoxLayout(self)
+        self._boxes: list[tuple[str, QCheckBox]] = []
+        for tab in tabs:
+            cb = QCheckBox(tab)
+            cb.setChecked(tab not in hidden)
+            if tab == "Main":
+                cb.setChecked(True)
+                cb.setEnabled(False)
+            layout.addWidget(cb)
+            self._boxes.append((tab, cb))
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def result_hidden(self) -> list[str]:
+        return [tab for tab, cb in self._boxes if not cb.isChecked()]
 
 
 class TileButton(QToolButton):
@@ -479,6 +522,8 @@ class Main(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.cfg = LauncherConfig.load()
+        self._ensure_has_visible_tab()
+        self.cfg.save()
 
         # Automatically expand to show more columns based on the number of
         # tiles across all tabs. More than 25 tiles expands to six columns and
@@ -512,6 +557,10 @@ class Main(QMainWindow):
         tab_menu.addAction("Add Tab", self.add_tab)
         tab_menu.addAction("Rename Tab", self.rename_tab)
         tab_menu.addAction("Delete Tab", self.delete_tab)
+        self.toggle_tab_action = QAction(self)
+        self.toggle_tab_action.triggered.connect(self.toggle_current_tab_visibility)
+        tab_menu.addAction(self.toggle_tab_action)
+        tab_menu.addAction("Manage Tab Visibility…", self.manage_tab_visibility)
 
         debug_menu = self.menuBar().addMenu("Debug")
         debug_menu.addAction("Raise Exception", self._debug_raise)
@@ -521,11 +570,38 @@ class Main(QMainWindow):
         self.tabs_widget.currentChanged.connect(
             lambda _=0: QTimer.singleShot(0, self.resize_to_fit_tiles)
         )
+        self.tabs_widget.currentChanged.connect(
+            lambda _: self._update_toggle_tab_action()
+        )
         self.setCentralWidget(self.tabs_widget)
 
         self._tab_viewports: set[QWidget] = set()
 
         self.rebuild()
+
+    def _visible_tabs(self) -> list[str]:
+        return [t for t in self.cfg.tabs if t not in self.cfg.hidden_tabs]
+
+    def _ensure_has_visible_tab(self) -> None:
+        if not self._visible_tabs():
+            if "Main" not in self.cfg.tabs:
+                self.cfg.tabs.insert(0, "Main")
+            self.cfg.hidden_tabs = [t for t in self.cfg.hidden_tabs if t != "Main"]
+
+    def _set_current_tab_by_name(self, name: str) -> None:
+        vis = self._visible_tabs()
+        if name in vis:
+            self.tabs_widget.setCurrentIndex(vis.index(name))
+        elif vis:
+            self.tabs_widget.setCurrentIndex(0)
+
+    def _update_toggle_tab_action(self) -> None:
+        name = self.current_tab()
+        hidden = name in self.cfg.hidden_tabs
+        self.toggle_tab_action.setText(
+            "Show Current Tab" if hidden else "Hide Current Tab"
+        )
+        self.toggle_tab_action.setEnabled(name != "Main")
 
     # -------- UI building --------
     def showEvent(self, event: QShowEvent) -> None:  # noqa: D401
@@ -536,7 +612,7 @@ class Main(QMainWindow):
         self.tabs_widget.clear()
         self._grids: dict[str, QGridLayout] = {}
         self._tab_viewports.clear()
-        for tab in self.cfg.tabs:
+        for tab in self._visible_tabs():
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             container = QWidget()
@@ -549,6 +625,7 @@ class Main(QMainWindow):
             self._grids[tab] = grid
             self._populate_tab(tab)
         QTimer.singleShot(0, self.resize_to_fit_tiles)
+        self._update_toggle_tab_action()
 
     def _populate_tab(self, tab: str) -> None:
         grid = self._grids[tab]
@@ -862,9 +939,7 @@ class Main(QMainWindow):
             )
             self.cfg.save()
             self.rebuild()
-            self.tabs_widget.setCurrentIndex(
-                self.cfg.tabs.index(cast(str, data["tab"]))
-            )
+            self._set_current_tab_by_name(cast(str, data["tab"]))
             record_breadcrumb(
                 "tile_add",
                 name=cast(str, data["name"]),
@@ -892,7 +967,7 @@ class Main(QMainWindow):
             tile.open_target = cast(str, data["open_target"])
             self.cfg.save()
             self.rebuild()
-            self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tile.tab))
+            self._set_current_tab_by_name(tile.tab)
 
     def duplicate_tile(self, tile: Tile) -> None:
         new_tile = replace(tile)
@@ -900,7 +975,7 @@ class Main(QMainWindow):
         self.cfg.tiles.insert(idx + 1, new_tile)
         self.cfg.save()
         self.rebuild()
-        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(tile.tab))
+        self._set_current_tab_by_name(tile.tab)
 
     def remove_tile(self, tile: Tile) -> None:
         ok = QMessageBox.warning(
@@ -919,7 +994,7 @@ class Main(QMainWindow):
         tile.tab = new_tab
         self.cfg.save()
         self.rebuild()
-        self.tabs_widget.setCurrentIndex(self.cfg.tabs.index(new_tab))
+        self._set_current_tab_by_name(new_tab)
 
     def add_tab(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Tab", "Tab name:")
@@ -934,7 +1009,7 @@ class Main(QMainWindow):
         self.cfg.tabs.append(name)
         self.cfg.save()
         self.rebuild()
-        self.tabs_widget.setCurrentIndex(len(self.cfg.tabs) - 1)
+        self._set_current_tab_by_name(name)
 
     def rename_tab(self) -> None:
         current = self.current_tab()
@@ -955,9 +1030,12 @@ class Main(QMainWindow):
         for t in self.cfg.tiles:
             if t.tab == current:
                 t.tab = name
+        if current in self.cfg.hidden_tabs:
+            hidx = self.cfg.hidden_tabs.index(current)
+            self.cfg.hidden_tabs[hidx] = name
         self.cfg.save()
         self.rebuild()
-        self.tabs_widget.setCurrentIndex(idx)
+        self._set_current_tab_by_name(name)
 
     def delete_tab(self) -> None:
         current = self.current_tab()
@@ -975,8 +1053,55 @@ class Main(QMainWindow):
             return
         self.cfg.tabs = [t for t in self.cfg.tabs if t != current]
         self.cfg.tiles = [t for t in self.cfg.tiles if t.tab != current]
+        self.cfg.hidden_tabs = [t for t in self.cfg.hidden_tabs if t != current]
         self.cfg.save()
         self.rebuild()
+
+    def toggle_current_tab_visibility(self) -> None:
+        name = self.current_tab()
+        if name == "Main":
+            QMessageBox.warning(self, "Not allowed", "Main cannot be hidden.")
+            return
+        if name in self.cfg.hidden_tabs:
+            self.cfg.hidden_tabs.remove(name)
+        else:
+            self.cfg.hidden_tabs.append(name)
+        self._ensure_has_visible_tab()
+        self.cfg.save()
+        self.rebuild()
+        self._set_current_tab_by_name(name)
+        record_breadcrumb(
+            "tab_visibility_toggle_single",
+            tab=name,
+            visible=name not in self.cfg.hidden_tabs,
+        )
+
+    def manage_tab_visibility(self) -> None:
+        dlg = TabVisibilityDialog(self.cfg.tabs, self.cfg.hidden_tabs, self)
+        while True:
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            hidden = dlg.result_hidden()
+            if len(hidden) == len(self.cfg.tabs):
+                QMessageBox.warning(
+                    self,
+                    "Not allowed",
+                    "At least one tab must be visible.",
+                )
+                continue
+            break
+        self.cfg.hidden_tabs = hidden
+        self._ensure_has_visible_tab()
+        self.cfg.save()
+        self.rebuild()
+        vis = self._visible_tabs()
+        if vis:
+            self._set_current_tab_by_name(vis[0])
+        record_breadcrumb(
+            "tab_visibility_apply",
+            hidden_tabs=self.cfg.hidden_tabs,
+            visible_tabs=self._visible_tabs(),
+        )
 
     def _debug_raise(self) -> None:
         raise RuntimeError("Test exception")
