@@ -45,6 +45,17 @@ format-check: install-dev ## Verify formatting with ruff
 typecheck: install-dev ## Run mypy
 > $(PY) -m mypy .
 
+.PHONY: ensure-test-deps
+ensure-test-deps: venv
+> @set -euo pipefail; \
+> if $(PY) -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" >/dev/null 2>&1; then \
+>   echo "[deps] pytest already present in $(VENV)"; \
+> else \
+>   echo "[deps] installing test deps into $(VENV)"; \
+>   $(PY) -m pip install --disable-pip-version-check -q -U pip wheel; \
+>   $(PY) -m pip install --disable-pip-version-check -q -r tests/requirements.txt; \
+> fi
+
 test: install-dev ## Run the full test suite (default)
 > @set -euo pipefail; \
 > if $(PY) - <<'PY' >/dev/null 2>&1; then \
@@ -62,16 +73,15 @@ test: install-dev ## Run the full test suite (default)
 > fi
 
 # Exact unit-only filter you used successfully:
-test_unit: install-dev ## Run unit tests only (exclude slow/integration/e2e/etc.)
+test_unit: install-dev ensure-test-deps ## Run unit tests only (exclude slow/integration/e2e/etc.)
 > @set -euo pipefail; \
-> if $(PY) -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)"; then \
->   echo "[test_unit] Running pytest (unit-only selection)"; \
+> if $(PY) -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" >/dev/null 2>&1; then \
+>   echo "[test_unit] running pytest (unit filter)"; \
 >   $(PY) -m pytest -q \
 >     -m 'unit and not (integration or e2e or slow or network or qt or gl or x11 or wayland or docker or gpu or perf or flaky)' \
 >     -k 'not multi_window and not tray and not lazy_refresh'; \
 > else \
->   echo "[test_unit] pytest not available; falling back to unittest"; \
->   $(PY) -m unittest discover tests -v || { status=$$?; [ $$status -eq 5 ] || exit $$status; }; \
+>   echo "[test_unit] pytest still missing unexpectedly; aborting"; exit 1; \
 > fi
 
 .PHONY: smoke
