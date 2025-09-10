@@ -247,28 +247,29 @@ class LauncherConfig:
     hidden_tabs: list[str] = field(default_factory=list)
 
     @staticmethod
-    def load():
+    def load() -> "LauncherConfig":
         if CFG_PATH.exists():
             data = json.loads(CFG_PATH.read_text(encoding="utf-8"))
             tiles = [Tile(**t) for t in data.get("tiles", [])]
-            tabs = data.get("tabs") or ["Main"]
-            # ensure all tabs referenced by tiles exist
-            for t in tiles:
-                if t.tab not in tabs:
-                    tabs.append(t.tab)
+            raw_tabs = data.get("tabs") or []
+            tabs: list[str] = []
+            for t in raw_tabs:
+                if isinstance(t, str) and t not in tabs:
+                    tabs.append(t)
+            for tile in tiles:
+                if tile.tab not in tabs:
+                    tabs.append(tile.tab)
             hidden_raw = data.get("hidden_tabs") or []
-            hidden_tabs = [
-                t
-                for t in hidden_raw
-                if isinstance(t, str) and t in tabs and t != "Main"
-            ]
-            return LauncherConfig(
+            hidden_tabs = [t for t in hidden_raw if isinstance(t, str)]
+            cfg = LauncherConfig(
                 title=data.get("title", "Launcher"),
                 columns=data.get("columns", 5),
                 tiles=tiles,
                 tabs=tabs,
                 hidden_tabs=hidden_tabs,
             )
+            enforce_tab_invariants(cfg)
+            return cfg
         # first run – create a friendly default
         cfg = LauncherConfig(
             title="My Launcher",
@@ -281,6 +282,7 @@ class LauncherConfig:
             tabs=["Main"],
             hidden_tabs=[],
         )
+        enforce_tab_invariants(cfg)
         cfg.save()
         return cfg
 
@@ -299,6 +301,38 @@ class LauncherConfig:
             "hidden_tabs": self.hidden_tabs,
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def enforce_tab_invariants(cfg: LauncherConfig) -> None:
+    """Ensure tab-related invariants for a configuration.
+
+    - ``cfg.tabs`` is a de-duplicated, non-empty list of strings.
+    - ``cfg.hidden_tabs`` is a subset of ``cfg.tabs`` and does not hide all tabs.
+    - Every tile's ``tab`` exists in ``cfg.tabs``; invalid entries are remapped to
+      the first tab.
+    """
+
+    clean_tabs: list[str] = []
+    for t in cfg.tabs:
+        if isinstance(t, str) and t not in clean_tabs:
+            clean_tabs.append(t)
+    if not clean_tabs:
+        clean_tabs = ["Main"]
+    cfg.tabs = clean_tabs
+
+    first_tab = cfg.tabs[0]
+    valid_tabs = set(cfg.tabs)
+    for tile in cfg.tiles:
+        if tile.tab not in valid_tabs:
+            tile.tab = first_tab
+
+    clean_hidden: list[str] = []
+    for t in cfg.hidden_tabs:
+        if t in valid_tabs and t not in clean_hidden:
+            clean_hidden.append(t)
+    cfg.hidden_tabs = clean_hidden
+    if len(cfg.hidden_tabs) >= len(cfg.tabs):
+        cfg.hidden_tabs = [t for t in cfg.hidden_tabs if t != first_tab]
 
 
 def guess_domain(url: str) -> str:
@@ -361,9 +395,6 @@ class TabVisibilityDialog(QDialog):
         for tab in tabs:
             cb = QCheckBox(tab)
             cb.setChecked(tab not in hidden)
-            if tab == "Main":
-                cb.setChecked(True)
-                cb.setEnabled(False)
             layout.addWidget(cb)
             self._boxes.append((tab, cb))
         buttons = QDialogButtonBox(
@@ -553,7 +584,7 @@ class Main(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.cfg = LauncherConfig.load()
-        self._ensure_has_visible_tab()
+        self._enforce_tab_invariants()
         self.cfg.save()
 
         # Automatically expand to show more columns based on the number of
@@ -613,11 +644,8 @@ class Main(QMainWindow):
     def _visible_tabs(self) -> list[str]:
         return [t for t in self.cfg.tabs if t not in self.cfg.hidden_tabs]
 
-    def _ensure_has_visible_tab(self) -> None:
-        if not self._visible_tabs():
-            if "Main" not in self.cfg.tabs:
-                self.cfg.tabs.insert(0, "Main")
-            self.cfg.hidden_tabs = [t for t in self.cfg.hidden_tabs if t != "Main"]
+    def _enforce_tab_invariants(self) -> None:
+        enforce_tab_invariants(self.cfg)
 
     def _set_current_tab_by_name(self, name: str) -> None:
         vis = self._visible_tabs()
@@ -632,7 +660,9 @@ class Main(QMainWindow):
         self.toggle_tab_action.setText(
             "Show Current Tab" if hidden else "Hide Current Tab"
         )
-        self.toggle_tab_action.setEnabled(name != "Main")
+        visible = self._visible_tabs()
+        allow_hide = not hidden and len(visible) > 1
+        self.toggle_tab_action.setEnabled(hidden or allow_hide)
 
     # -------- UI building --------
     def showEvent(self, event: QShowEvent) -> None:  # noqa: D401
@@ -763,8 +793,9 @@ class Main(QMainWindow):
 
     def current_tab(self) -> str:
         idx = self.tabs_widget.currentIndex()
+        vis = self._visible_tabs()
         if idx < 0:
-            return "Main"
+            return vis[0] if vis else (self.cfg.tabs[0] if self.cfg.tabs else "Main")
         return self.tabs_widget.tabText(idx)
 
     # -------- actions --------
@@ -1046,15 +1077,13 @@ class Main(QMainWindow):
             )
             return
         self.cfg.tabs.append(name)
+        self._enforce_tab_invariants()
         self.cfg.save()
         self.rebuild()
         self._set_current_tab_by_name(name)
 
     def rename_tab(self) -> None:
         current = self.current_tab()
-        if current == "Main":
-            QMessageBox.warning(self, "Not allowed", "The Main tab cannot be renamed.")
-            return
         name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", text=current)
         if not ok or not name.strip():
             return
@@ -1072,14 +1101,18 @@ class Main(QMainWindow):
         if current in self.cfg.hidden_tabs:
             hidx = self.cfg.hidden_tabs.index(current)
             self.cfg.hidden_tabs[hidx] = name
+        self._enforce_tab_invariants()
         self.cfg.save()
         self.rebuild()
         self._set_current_tab_by_name(name)
 
     def delete_tab(self) -> None:
         current = self.current_tab()
-        if current == "Main":
-            QMessageBox.warning(self, "Not allowed", "The Main tab cannot be deleted.")
+        if len(self.cfg.tabs) == 1:
+            QMessageBox.warning(self, "Not allowed", "At least one tab must exist.")
+            record_breadcrumb(
+                "tab_action_blocked", action="delete", reason="last_tab", tab=current
+            )
             return
         ok = QMessageBox.question(
             self,
@@ -1093,19 +1126,29 @@ class Main(QMainWindow):
         self.cfg.tabs = [t for t in self.cfg.tabs if t != current]
         self.cfg.tiles = [t for t in self.cfg.tiles if t.tab != current]
         self.cfg.hidden_tabs = [t for t in self.cfg.hidden_tabs if t != current]
+        self._enforce_tab_invariants()
         self.cfg.save()
         self.rebuild()
 
     def toggle_current_tab_visibility(self) -> None:
         name = self.current_tab()
-        if name == "Main":
-            QMessageBox.warning(self, "Not allowed", "Main cannot be hidden.")
+        hidden = name in self.cfg.hidden_tabs
+        if not hidden and len(self._visible_tabs()) == 1:
+            QMessageBox.warning(
+                self, "Not allowed", "At least one tab must remain visible."
+            )
+            record_breadcrumb(
+                "tab_action_blocked",
+                action="hide",
+                reason="last_visible",
+                tab=name,
+            )
             return
-        if name in self.cfg.hidden_tabs:
+        if hidden:
             self.cfg.hidden_tabs.remove(name)
         else:
             self.cfg.hidden_tabs.append(name)
-        self._ensure_has_visible_tab()
+        self._enforce_tab_invariants()
         self.cfg.save()
         self.rebuild()
         self._set_current_tab_by_name(name)
@@ -1125,12 +1168,12 @@ class Main(QMainWindow):
                 QMessageBox.warning(
                     self,
                     "Not allowed",
-                    "At least one tab must be visible.",
+                    "At least one tab must remain visible.",
                 )
                 continue
             break
         self.cfg.hidden_tabs = hidden
-        self._ensure_has_visible_tab()
+        self._enforce_tab_invariants()
         self.cfg.save()
         self.rebuild()
         vis = self._visible_tabs()
