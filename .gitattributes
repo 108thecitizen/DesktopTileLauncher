@@ -78,3 +78,7 @@
 # Ensure shell scripts use LF in the repo (avoid bash^M on Linux)
 *.sh text eol=lf
 Makefile text eol=lf
+
+# Keep Python files LF in the repo (avoid reformat noise on CI)
+*.py text eol=lf
+Makefile text eol=lf
