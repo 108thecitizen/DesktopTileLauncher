@@ -111,16 +111,16 @@ clean: ## Remove caches and build artifacts
 .PHONY: reassemble_wheels test_unit_offline
 
 reassemble_wheels:
-	@set -euo pipefail; \
-	for aa in vendor/wheelhouse-linux/*.whl.part-aa; do \
-	  [ -e "$$aa" ] || continue; \
-	  base="$${aa%.part-*}"; \
-	  echo "Reassembling $${base##*/}"; \
-	  cat "$$base".part-* > "$$base"; \
-	done
+>	@set -euo pipefail; \
+>	for aa in vendor/wheelhouse-linux/*.whl.part-aa; do \
+>	  [ -e "$$aa" ] || continue; \
+>	  base="$${aa%.part-*}"; \
+>	  echo "Reassembling $${base##*/}"; \
+>	  cat "$$base".part-* > "$$base"; \
+>	done
 
 # One-liner that mirrors the Codex task: reassemble + force offline install + run tests
 test_unit_offline: reassemble_wheels
-	@PIP_NO_INDEX=1 PIP_FIND_LINKS="vendor/wheelhouse-linux" $(MAKE) ONLINE=1 test_unit
+>	@PIP_NO_INDEX=1 PIP_FIND_LINKS="vendor/wheelhouse-linux" $(MAKE) ONLINE=1 test_unit
 
 

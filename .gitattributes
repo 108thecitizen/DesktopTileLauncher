@@ -77,3 +77,4 @@
 
 # Ensure shell scripts use LF in the repo (avoid bash^M on Linux)
 *.sh text eol=lf
+Makefile text eol=lf
