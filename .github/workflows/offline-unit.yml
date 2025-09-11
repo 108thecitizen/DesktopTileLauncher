@@ -7,11 +7,22 @@ on:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Reassemble split wheels
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Reassemble split wheels (PySide6_Addons, etc.)
+        shell: bash
         run: |
+          set -euo pipefail
           shopt -s nullglob
           for aa in vendor/wheelhouse-linux/*.whl.part-aa; do
             base="${aa%.part-*}"
@@ -19,27 +30,27 @@ jobs:
             cat "$base".part-* > "$base"
           done
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
       - name: Create venv & install from vendored wheels (offline)
+        shell: bash
         env:
           PIP_NO_INDEX: "1"
           PIP_FIND_LINKS: ${{ github.workspace }}/vendor/wheelhouse-linux
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
           QT_QPA_PLATFORM: offscreen
           QT_OPENGL: software
         run: |
+          set -euo pipefail
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install -r tests/requirements.txt
           python -m pip install -r requirements.txt
 
       - name: Run unit tests via Makefile (offline)
+        shell: bash
         env:
           PIP_NO_INDEX: "1"
           PIP_FIND_LINKS: ${{ github.workspace }}/vendor/wheelhouse-linux
         run: |
+          set -euo pipefail
           . .venv/bin/activate
           make ONLINE=1 test_unit
