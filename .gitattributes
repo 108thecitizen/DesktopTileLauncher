@@ -75,3 +75,5 @@
 # Explicit binaries (self-documenting)
 *.ico   binary
 
+# Ensure shell scripts use LF in the repo (avoid bash^M on Linux)
+*.sh text eol=lf
