@@ -105,3 +105,13 @@ The application never sends data over the network.  When something goes wrong,
 use the *Create Crash Bundle* button on the crash dialog to zip the log files
 and a `crash.json` snapshot of runtime context.  Attach this bundle when filing
 a GitHub issue.
+
+## Running unit tests offline (Codex / air‑gapped)
+
+We vendor Linux wheels under `vendor/wheelhouse-linux/` (PySide6 wheels are split into `*.whl.part-*` to stay under GitHub’s 100 MB limit).
+
+**One-liner:**
+```bash
+bash tools/offline_bootstrap.sh
+# or:
+make test_unit_offline
