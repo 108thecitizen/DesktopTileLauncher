@@ -386,3 +386,16 @@ run_local.py
 bandit.txt
 bandit.json
 *.bk
+# --- local/offline artifacts (do not commit) ---
+/wheelhouse/
+/wheelhouse-linux/
+/wheelhouse-linux.zip
+/DesktopTileLauncher-src.zip
+/.venv/
+/__pycache__/
+/.pytest_cache/
+/.ruff_cache/
+/.mypy_cache/
+
+# Never commit the reassembled giant wheel; only the split parts live in git
+/vendor/wheelhouse-linux/pyside6_addons-*.whl
