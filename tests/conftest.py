@@ -43,6 +43,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+
 # ---------- Optional: mark and skip GL-only tests in headless CI ----------
 def _has_libgl() -> bool:
     """Detect presence of the OpenGL runtime."""
@@ -52,12 +53,14 @@ def _has_libgl() -> bool:
     except OSError:
         return False
 
+
 def pytest_configure(config):
     # Register a marker so pytest doesn't warn about it if/when you use it.
     config.addinivalue_line(
         "markers",
         "requires_opengl: test depends on an OpenGL runtime (libGL); skip in headless CI",
     )
+
 
 def pytest_runtest_setup(item):
     # Only skip tests you explicitly mark; nothing else is affected.
