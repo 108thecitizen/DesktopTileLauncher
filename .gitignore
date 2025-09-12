@@ -399,3 +399,5 @@ bandit.json
 
 # Never commit the reassembled giant wheel; only the split parts live in git
 /vendor/wheelhouse-linux/pyside6_addons-*.whl
+
+DesktopTileLauncher-v*.zip
