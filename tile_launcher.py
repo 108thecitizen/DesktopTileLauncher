@@ -41,8 +41,10 @@ from PySide6.QtGui import (
     QFont,
     QIcon,
     QMouseEvent,
+    QMoveEvent,
     QPainter,
     QPixmap,
+    QResizeEvent,
     QShowEvent,
 )
 from PySide6.QtWidgets import (
@@ -56,6 +58,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QScrollArea,
+    QStyle,
     QTabWidget,
     QToolBar,
     QToolButton,
@@ -245,6 +248,7 @@ class LauncherConfig:
     tiles: list["Tile"] = field(default_factory=list)
     tabs: list[str] = field(default_factory=lambda: ["Main"])
     hidden_tabs: list[str] = field(default_factory=list)
+    auto_fit: bool = True
 
     @staticmethod
     def load() -> "LauncherConfig":
@@ -267,6 +271,7 @@ class LauncherConfig:
                 tiles=tiles,
                 tabs=tabs,
                 hidden_tabs=hidden_tabs,
+                auto_fit=data.get("auto_fit", True),
             )
             enforce_tab_invariants(cfg)
             return cfg
@@ -281,6 +286,7 @@ class LauncherConfig:
             ],
             tabs=["Main"],
             hidden_tabs=[],
+            auto_fit=True,
         )
         enforce_tab_invariants(cfg)
         cfg.save()
@@ -299,6 +305,7 @@ class LauncherConfig:
             "tiles": tiles,
             "tabs": self.tabs,
             "hidden_tabs": self.hidden_tabs,
+            "auto_fit": self.auto_fit,
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -333,6 +340,81 @@ def enforce_tab_invariants(cfg: LauncherConfig) -> None:
     cfg.hidden_tabs = clean_hidden
     if len(cfg.hidden_tabs) >= len(cfg.tabs):
         cfg.hidden_tabs = [t for t in cfg.hidden_tabs if t != first_tab]
+
+
+@dataclass
+class FitResult:
+    columns: int
+    rows_visible: int
+    need_vscroll: bool
+    window_w: int
+    window_h: int
+
+
+def compute_grid_fit(
+    avail_w: int,
+    avail_h: int,
+    tile_w: int,
+    tile_h: int,
+    spacing: int,
+    margins_lr: int,
+    margins_tb: int,
+    frame_w: int,
+    frame_h: int,
+    qstyle_scrollbar_extent: Optional[int],
+    total_tiles_on_tab: int,
+    columns_hint: Optional[int],
+) -> FitResult:
+    """Compute a snap-to-grid fit using only full tiles.
+
+    Width/height refer to the *outer* window size including the frame.
+    The algorithm snaps to full tiles, optionally respecting a hint for the
+    number of columns when ``columns_hint`` is provided.
+    """
+
+    scrollbar_extent = qstyle_scrollbar_extent or 16
+
+    unit_w = tile_w + spacing
+    unit_h = tile_h + spacing
+
+    usable_w = avail_w - frame_w - margins_lr
+    usable_h = avail_h - frame_h - margins_tb
+
+    max_cols = max(1, (usable_w + spacing) // unit_w)
+    if columns_hint is not None:
+        columns = max(1, min(columns_hint, max_cols))
+    else:
+        columns = max_cols
+
+    rows_fit = max(1, (usable_h + spacing) // unit_h)
+    rows_required = (total_tiles_on_tab + columns - 1) // columns
+    need_vscroll = rows_required > rows_fit
+
+    if need_vscroll:
+        usable_w -= scrollbar_extent
+        max_cols = max(1, (usable_w + spacing) // unit_w)
+        if columns_hint is not None:
+            columns = max(1, min(columns_hint, max_cols))
+        else:
+            columns = max_cols
+        rows_fit = max(1, (usable_h + spacing) // unit_h)
+        rows_required = (total_tiles_on_tab + columns - 1) // columns
+        need_vscroll = rows_required > rows_fit
+
+    rows_visible = min(rows_fit, rows_required)
+
+    width = columns * tile_w + max(0, columns - 1) * spacing + margins_lr + frame_w
+    height = (
+        rows_visible * tile_h
+        + max(0, rows_visible - 1) * spacing
+        + margins_tb
+        + frame_h
+    )
+
+    width = min(width, avail_w)
+    height = min(height, avail_h)
+
+    return FitResult(columns, rows_visible, need_vscroll, int(width), int(height))
 
 
 def guess_domain(url: str) -> str:
@@ -586,22 +668,21 @@ class Main(QMainWindow):
         self.cfg = LauncherConfig.load()
         self._enforce_tab_invariants()
         self.cfg.save()
+        self._fit_guard = False
+        self._computed_columns = self.cfg.columns
 
-        # Automatically expand to show more columns based on the number of
-        # tiles across all tabs. More than 25 tiles expands to six columns and
-        # more than 36 tiles expands to seven columns. This adjusts both the
-        # column count and the window width so that the grid fits without the
-        # user having to resize manually.
-        if len(self.cfg.tiles) > 36 and self.cfg.columns < 7:
-            self.cfg.columns = 7
-        elif len(self.cfg.tiles) > 25 and self.cfg.columns < 6:
-            self.cfg.columns = 6
+        if not self.cfg.auto_fit:
+            # Backwards‑compatibility heuristic for fixed columns.
+            if len(self.cfg.tiles) > 36 and self.cfg.columns < 7:
+                self.cfg.columns = 7
+            elif len(self.cfg.tiles) > 25 and self.cfg.columns < 6:
+                self.cfg.columns = 6
 
         self.setWindowTitle(self.cfg.title)
 
         width, height = 900, 600
         self.resize(width, height)
-        if len(self.cfg.tiles) > 25:
+        if not self.cfg.auto_fit and len(self.cfg.tiles) > 25:
             cols = max(6, self.cfg.columns)
             tile_w, spacing, margins = 150, 12, 32
             needed_width = margins + cols * tile_w + (cols - 1) * spacing
@@ -624,6 +705,13 @@ class Main(QMainWindow):
         tab_menu.addAction(self.toggle_tab_action)
         tab_menu.addAction("Manage Tab Visibility…", self.manage_tab_visibility)
 
+        view_menu = self.menuBar().addMenu("View")
+        self.auto_fit_action = QAction("Auto-fit Tiles to Display", self)
+        self.auto_fit_action.setCheckable(True)
+        self.auto_fit_action.setChecked(self.cfg.auto_fit)
+        self.auto_fit_action.toggled.connect(self._toggle_auto_fit)
+        view_menu.addAction(self.auto_fit_action)
+
         debug_menu = self.menuBar().addMenu("Debug")
         debug_menu.addAction("Raise Exception", self._debug_raise)
         debug_menu.addAction("Qt Warning", lambda: qWarning("test"))
@@ -640,6 +728,12 @@ class Main(QMainWindow):
         self._tab_viewports: set[QWidget] = set()
 
         self.rebuild()
+
+        wh = self.windowHandle()
+        if wh is not None:
+            wh.screenChanged.connect(
+                lambda _s: QTimer.singleShot(0, self.resize_to_fit_tiles)
+            )
 
     def _visible_tabs(self) -> list[str]:
         return [t for t in self.cfg.tabs if t not in self.cfg.hidden_tabs]
@@ -663,6 +757,14 @@ class Main(QMainWindow):
         visible = self._visible_tabs()
         allow_hide = not hidden and len(visible) > 1
         self.toggle_tab_action.setEnabled(hidden or allow_hide)
+
+    def _toggle_auto_fit(self, checked: bool) -> None:
+        self.cfg.auto_fit = checked
+        if not checked:
+            self._computed_columns = self.cfg.columns
+        self.cfg.save()
+        self.rebuild()
+        self.resize_to_fit_tiles()
 
     # -------- UI building --------
     def showEvent(self, event: QShowEvent) -> None:  # noqa: D401
@@ -696,7 +798,10 @@ class Main(QMainWindow):
             if w:
                 w.deleteLater()
 
-        cols = max(1, int(self.cfg.columns))
+        if self.cfg.auto_fit:
+            cols = max(1, int(self._computed_columns))
+        else:
+            cols = max(1, int(self.cfg.columns))
         r = c = 0
         tab_tiles = [t for t in self.cfg.tiles if t.tab == tab]
         all_tabs = list(self.cfg.tabs)
@@ -753,43 +858,92 @@ class Main(QMainWindow):
         act.triggered.connect(lambda: self.add_tile(self.current_tab()))
         menu.exec(global_pos)
 
+    def moveEvent(self, event: QMoveEvent) -> None:  # noqa: D401
+        super().moveEvent(event)
+        if self.cfg.auto_fit and not self._fit_guard:
+            QTimer.singleShot(0, self.resize_to_fit_tiles)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401
+        super().resizeEvent(event)
+        if self.cfg.auto_fit and not self._fit_guard:
+            QTimer.singleShot(0, self.resize_to_fit_tiles)
+
     def resize_to_fit_tiles(self) -> None:
-        cols = max(1, int(self.cfg.columns))
-        tile_w, tile_h = 150, 140
-        current = self.current_tab()
-        grid = self._grids.get(current)
-        if grid is None:
+        if self._fit_guard:
             return
-        spacing = grid.spacing()
-        margins = grid.contentsMargins()
-        tile_count = len([t for t in self.cfg.tiles if t.tab == current])
-        rows = (tile_count + cols - 1) // cols
+        self._fit_guard = True
+        try:
+            tile_w, tile_h = 150, 140
+            current = self.current_tab()
+            grid = self._grids.get(current)
+            if grid is None:
+                return
+            spacing = grid.spacing()
+            margins = grid.contentsMargins()
+            margins_lr = margins.left() + margins.right()
+            margins_tb = margins.top() + margins.bottom()
+            tile_count = len([t for t in self.cfg.tiles if t.tab == current])
 
-        width = (
-            cols * tile_w
-            + max(0, cols - 1) * spacing
-            + margins.left()
-            + margins.right()
-        )
-        height = (
-            rows * tile_h
-            + max(0, rows - 1) * spacing
-            + margins.top()
-            + margins.bottom()
-        )
+            screen = (
+                self.windowHandle().screen()
+                if self.windowHandle() is not None
+                else QApplication.screenAt(self.frameGeometry().center())
+            )
+            if screen is None:
+                screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry()
 
-        frame_w = self.frameGeometry().width() - self.geometry().width()
-        frame_h = self.frameGeometry().height() - self.geometry().height()
-        width += frame_w
-        height += frame_h
+            frame_w = self.frameGeometry().width() - self.geometry().width()
+            frame_h = self.frameGeometry().height() - self.geometry().height()
+            try:
+                sb_w = self.style().pixelMetric(QStyle.PM_ScrollBarExtent, None, self)
+            except Exception:
+                sb_w = 16
+            if sb_w <= 0:
+                sb_w = 16
 
-        screen = QApplication.primaryScreen().availableGeometry()
-        width = min(width, screen.width())
-        height = min(height, screen.height())
-        self.resize(width, height)
+            columns_hint = None if self.cfg.auto_fit else self.cfg.columns
 
-        if tile_count > 20:
-            self.move(self.x(), screen.top())
+            result = compute_grid_fit(
+                avail.width(),
+                avail.height(),
+                tile_w,
+                tile_h,
+                spacing,
+                margins_lr,
+                margins_tb,
+                frame_w,
+                frame_h,
+                sb_w,
+                tile_count,
+                columns_hint,
+            )
+
+            if self.cfg.auto_fit and result.columns != self._computed_columns:
+                self._computed_columns = result.columns
+                self._populate_tab(current)
+
+            record_breadcrumb(
+                "fit_compute",
+                screen=getattr(screen, "name", lambda: "unknown")(),
+                avail_w=avail.width(),
+                avail_h=avail.height(),
+                tiles=tile_count,
+                hint_cols=columns_hint,
+                cols=result.columns,
+                rows_visible=result.rows_visible,
+                need_vscroll=result.need_vscroll,
+            )
+
+            self.resize(result.window_w, result.window_h)
+            record_breadcrumb(
+                "fit_apply", window_w=result.window_w, window_h=result.window_h
+            )
+
+            if tile_count > 0 and result.need_vscroll:
+                self.move(self.x(), avail.top())
+        finally:
+            self._fit_guard = False
 
     def current_tab(self) -> str:
         idx = self.tabs_widget.currentIndex()
