@@ -12,9 +12,24 @@ concurrency:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+
+      - name: Use vendored GL/EGL libs
+        if: runner.os == 'Linux'
+        run: |
+          cd "$GITHUB_WORKSPACE/vendor/linux-libs/ubuntu-24.04"
+          [ -f libEGL.so.1.1.0 ] && [ ! -L libEGL.so.1 ] && ln -sfn libEGL.so.1.1.0 libEGL.so.1 || true
+          [ -f libGLdispatch.so.0.0.0 ] && [ ! -L libGLdispatch.so.0 ] && ln -sfn libGLdispatch.so.0.0.0 libGLdispatch.so.0 || true
+          [ -f libGLX.so.0.0.0 ] && [ ! -L libGLX.so.0 ] && ln -sfn libGLX.so.0.0.0 libGLX.so.0 || true
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/vendor/linux-libs/ubuntu-24.04:\$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          echo "QT_QPA_PLATFORM=offscreen" >> $GITHUB_ENV
+
+      - name: Smoke-check libEGL availability
+        if: runner.os == 'Linux'
+        run: python -c "import ctypes; ctypes.CDLL('libEGL.so.1'); print('libEGL loaded OK')"
+
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -22,15 +37,9 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             pyproject.toml
-      - name: Install dev deps via Makefile
+
+      - name: Install dev deps
         run: make install-dev
+
       - name: Unit tests
-        run: make test_unit
-      - name: Bootstrap pytest for unit tests
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r tests/requirements.txt
-      - name: Dev setup (optional)
-        run: make install-dev
-      - name: Unit tests (pytest)
         run: make test_unit
