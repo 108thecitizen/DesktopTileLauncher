@@ -26,7 +26,6 @@ jobs:
           echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/vendor/linux-libs/ubuntu-24.04:\$LD_LIBRARY_PATH" >> $GITHUB_ENV
           echo "QT_QPA_PLATFORM=offscreen" >> $GITHUB_ENV
 
-      # simple sanity check (no heredoc indentation issues)
       - name: Smoke-check libEGL availability
         if: runner.os == 'Linux'
         run: python -c "import ctypes; ctypes.CDLL('libEGL.so.1'); print('libEGL loaded OK')"
