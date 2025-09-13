@@ -431,7 +431,9 @@ def _auto_fit_columns(n_tiles: int, current_cols: int) -> int:
     """
     if n_tiles <= 0:
         return current_cols
-    return max(current_cols, int(math.ceil(math.sqrt(n_tiles))))  # monotonic, idempotent
+    return max(
+        current_cols, int(math.ceil(math.sqrt(n_tiles)))
+    )  # monotonic, idempotent
 
 
 def guess_domain(url: str) -> str:
