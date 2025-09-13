@@ -9,7 +9,7 @@ pytestmark = pytest.mark.qt
 
 pytest.importorskip("PySide6.QtWidgets")
 
-from tile_launcher import Main, Tile
+from tile_launcher import Main, Tile  # noqa: E402
 
 
 @pytest.mark.unit
