@@ -5,6 +5,7 @@ import subprocess
 import webbrowser
 
 import pytest
+pytestmark = pytest.mark.qt
 
 pytest.importorskip("PySide6.QtWidgets")
 
