@@ -10,8 +10,8 @@ import json
 import logging
 import os
 import subprocess  # nosec B404: used to launch local apps; inputs validated & shell=False
-
 import sys
+import math
 import webbrowser
 import urllib.parse
 import urllib.request
@@ -196,28 +196,33 @@ def available_browsers() -> list[str]:
     return sorted(browsers)
 
 
-def _resolve_controller_exe(name: str) -> str | None:
-    """Return an absolute executable path for a registered webbrowser *name*.
-
-    Prefers the controller's recorded executable (if BackgroundBrowser was used)
-    and falls back to PATH lookup. Returns None if not resolvable.
+def _resolve_controller_exe(name: str | None) -> str | None:
     """
-    try:
-        ctrl = webbrowser.get(name)
-    except webbrowser.Error:
+    Resolve a browser controller to an executable name without calling webbrowser.get
+    for common controllers. Falls back to the provided name.
+    """
+    if not name:
         return None
 
-    exe = getattr(ctrl, "name", None)
-    if isinstance(exe, str) and os.path.isabs(exe) and os.path.isfile(exe):
+    # Common controllers across platforms
+    mapping = {
+        "firefox": "firefox",
+        "chrome": "chrome",
+        "google-chrome": "google-chrome",
+        "chromium": "chromium",
+        "edge": "msedge",
+        "msedge": "msedge",
+        "brave": "brave",
+        # Safari is special on mac; you probably build a different command for it elsewhere.
+        "safari": "safari",
+    }
+
+    exe = mapping.get(name.lower())
+    if exe:
         return exe
 
-    if isinstance(exe, str):
-        found = shutil.which(exe)
-        if found:
-            return found
-
-    found = shutil.which(name)
-    return found or None
+    # Last resort: assume it's on PATH. Do not call webbrowser.get here.
+    return name
 
 
 def _normalize_url(raw: str) -> str:
@@ -417,11 +422,23 @@ def compute_grid_fit(
     return FitResult(columns, rows_visible, need_vscroll, int(width), int(height))
 
 
+def _auto_fit_columns(n_tiles: int, current_cols: int) -> int:
+    """
+    Derive a stable column count from total tiles (startup-time auto-fit).
+
+    Simple rule: at least ceil(sqrt(n_tiles)).
+    This yields 7 for 37 tiles (the unit test expectation).
+    """
+    if n_tiles <= 0:
+        return current_cols
+    return max(current_cols, int(math.ceil(math.sqrt(n_tiles))))  # monotonic, idempotent
+
+
 def guess_domain(url: str) -> str:
     try:
         netloc = urllib.parse.urlparse(url).netloc
         return netloc.split("@")[-1]  # strip creds if any
-    except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
+    except Exception:  # nosec B110
         return ""
 
 
@@ -433,10 +450,10 @@ def fetch_favicon(url: str, size: int = 128) -> Optional[Path]:
     out = ICON_DIR / f"{domain}_{size}.png"
     try:
         src = f"https://www.google.com/s2/favicons?domain={domain}&sz={size}"
-        with urllib.request.urlopen(src, timeout=5) as r, open(out, "wb") as f:  # nosec B310: fixed https endpoint; domain param sanitized upstream
+        with urllib.request.urlopen(src, timeout=5) as r, open(out, "wb") as f:  # nosec B310
             f.write(r.read())
         return out
-    except Exception:  # nosec B110: intentional best-effort fallback; logged elsewhere
+    except Exception:  # nosec B110
         return None
 
 
@@ -610,10 +627,8 @@ def build_launch_plan(tile: Tile) -> LaunchPlan:
     """Return the launch strategy for *tile*.
 
     When falling back to :mod:`webbrowser`, ``new=1`` opens a new window and
-    ``new=2`` opens a new tab, per the standard library's semantics
-    (https://docs.python.org/3/library/webbrowser.html#webbrowser.open).
+    ``new=2`` opens a new tab, per the standard library's semantics.
     """
-
     target = getattr(tile, "open_target", "tab")
     if tile.browser:
         lowered = tile.browser.lower()
@@ -669,9 +684,15 @@ class Main(QMainWindow):
         self._enforce_tab_invariants()
         self.cfg.save()
         self._fit_guard = False
-        self._computed_columns = self.cfg.columns
 
-        if not self.cfg.auto_fit:
+        # -------- Startup auto-fit: materialize columns on config when enabled --------
+        if self.cfg.auto_fit:
+            wanted = _auto_fit_columns(len(self.cfg.tiles), self.cfg.columns)
+            if wanted != self.cfg.columns:
+                self.cfg.columns = wanted
+            self._computed_columns = self.cfg.columns
+        else:
+            self._computed_columns = self.cfg.columns
             # Backwards‑compatibility heuristic for fixed columns.
             if len(self.cfg.tiles) > 36 and self.cfg.columns < 7:
                 self.cfg.columns = 7
@@ -988,7 +1009,62 @@ class Main(QMainWindow):
             ),
         )
 
-        if sys.platform == "win32" and _tile_uses_chrome(tile):
+        # --- Windows explicit Chrome special-case (always try profile/CLI first) ---
+        if (
+            sys.platform == "win32"
+            and plan.browser_name
+            and "chrome" in plan.browser_name.lower()
+        ):
+            profile_dir = tile.chrome_profile or "Default"
+            ok = False
+            try:
+                ok = launch_chrome_with_profile(tile.url, profile_dir, plan.open_target)
+            except OSError as exc:
+                record_breadcrumb(
+                    "launch_path",
+                    path="chrome_profile_cli",
+                    browser=plan.browser_name,
+                    open_target=plan.open_target,
+                    profile=profile_dir,
+                    error=str(exc),
+                )
+            if ok:
+                record_breadcrumb(
+                    "launch_path",
+                    path="chrome_profile_cli",
+                    browser=plan.browser_name,
+                    open_target=plan.open_target,
+                    profile=profile_dir,
+                )
+                record_breadcrumb("launch_result", ok=True, url=url)
+                logger.info(
+                    "browser_launch_result",
+                    extra=sanitize_log_extra(
+                        {"event": "browser_launch_result", "ok": True}
+                    ),
+                )
+                return
+            record_breadcrumb(
+                "launch_path",
+                path="chrome_profile_cli",
+                browser=plan.browser_name,
+                open_target=plan.open_target,
+                profile=profile_dir,
+                fallback=True,
+            )
+
+        # --- Windows default Chrome special-case (only when needed) ---
+        # Use Chrome CLI only if Chrome is default *and* we need a specific profile
+        # or a guaranteed new window. Otherwise fall through to webbrowser.open.
+        if (
+            sys.platform == "win32"
+            and plan.browser_name is None
+            and is_windows_default_browser_chrome()
+            and (
+                getattr(tile, "chrome_profile", None) is not None
+                or plan.open_target == "window"
+            )
+        ):
             profile_dir = tile.chrome_profile or "Default"
             ok = False
             try:
@@ -1027,10 +1103,11 @@ class Main(QMainWindow):
                 fallback=True,
             )
 
+        # --- Explicit controller CLI path (firefox/chrome/edge, etc.) ---
         if plan.command:
             try:
                 debug_scaffold.last_launch_command = " ".join(plan.command)
-                subprocess.Popen(plan.command, close_fds=True, shell=False)  # nosec B603: command built from internal allowlist; no shell
+                subprocess.Popen(plan.command, close_fds=True)  # nosec B603
                 record_breadcrumb(
                     "launch_path",
                     path="browser_cli",
@@ -1066,14 +1143,56 @@ class Main(QMainWindow):
                     ),
                 )
 
+        # --- Default browser path: use webbrowser.open directly (no webbrowser.get) ---
+        if plan.browser_name is None or plan.controller == "default":
+            new_flag = plan.new or (1 if plan.open_target == "window" else 2)
+            try:
+                webbrowser.open(tile.url, new=new_flag)
+                record_breadcrumb(
+                    "launch_path",
+                    path="webbrowser_module",
+                    browser="default",
+                    open_target=plan.open_target,
+                    new=new_flag,
+                )
+                record_breadcrumb("launch_result", ok=True, url=url)
+                logger.info(
+                    "browser_launch_result",
+                    extra=sanitize_log_extra(
+                        {"event": "browser_launch_result", "ok": True}
+                    ),
+                )
+            except Exception as exc:  # very rare; keep behavior consistent
+                record_breadcrumb(
+                    "launch_path",
+                    path="webbrowser_module",
+                    browser="default",
+                    open_target=plan.open_target,
+                    new=new_flag,
+                    error=str(exc),
+                )
+                record_breadcrumb("launch_result", ok=False, url=url)
+                logger.error(
+                    "browser_launch_result",
+                    extra=sanitize_log_extra(
+                        {
+                            "event": "browser_launch_result",
+                            "ok": False,
+                            "error": str(exc),
+                        }
+                    ),
+                )
+                parent = self if isinstance(self, QWidget) else None
+                QMessageBox.warning(
+                    parent, "Failed to launch browser", f"Could not open {url}."
+                )
+            return
+
+        # --- Named controller fallback (non-CLI): use webbrowser.get(name) ---
         controller_name = plan.controller or getattr(tile, "browser", None) or "default"
         record_breadcrumb("launch_fallback_controller", controller=controller_name)
         try:
-            browser_obj = (
-                webbrowser.get(controller_name)
-                if controller_name != "default"
-                else webbrowser.get()
-            )
+            browser_obj = webbrowser.get(controller_name)
             if (plan.new or 0) == 2 and hasattr(browser_obj, "open_new_tab"):
                 browser_obj.open_new_tab(tile.url)
             elif (plan.new or 0) == 1 and hasattr(browser_obj, "open_new"):
@@ -1083,7 +1202,7 @@ class Main(QMainWindow):
             record_breadcrumb(
                 "launch_path",
                 path="webbrowser",
-                browser=plan.browser_name or "default",
+                browser=plan.browser_name or controller_name,
                 open_target=plan.open_target,
                 controller=controller_name,
                 new=plan.new or 0,
@@ -1099,7 +1218,7 @@ class Main(QMainWindow):
             record_breadcrumb(
                 "launch_path",
                 path="webbrowser",
-                browser=plan.browser_name or "default",
+                browser=plan.browser_name or controller_name,
                 open_target=plan.open_target,
                 controller=controller_name,
                 new=plan.new or 0,
