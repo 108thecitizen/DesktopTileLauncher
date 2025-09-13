@@ -5,6 +5,7 @@ import subprocess
 import webbrowser
 
 import pytest
+
 pytestmark = pytest.mark.qt
 
 pytestmark = pytest.mark.qt
