@@ -741,7 +741,7 @@ class Main(QMainWindow):
 
         self.tabs_widget = QTabWidget()
         self.tabs_widget.currentChanged.connect(
-            lambda _=0: QTimer.singleShot(0, self.resize_to_fit_tiles)
+            lambda _=0: QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit))
         )
         self.tabs_widget.currentChanged.connect(
             lambda _: self._update_toggle_tab_action()
@@ -755,7 +755,7 @@ class Main(QMainWindow):
         wh = self.windowHandle()
         if wh is not None:
             wh.screenChanged.connect(
-                lambda _s: QTimer.singleShot(0, self.resize_to_fit_tiles)
+                lambda _s: QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit))
             )
 
     def _visible_tabs(self) -> list[str]:
@@ -787,7 +787,7 @@ class Main(QMainWindow):
             self._computed_columns = self.cfg.columns
         self.cfg.save()
         self.rebuild()
-        self.resize_to_fit_tiles()
+        self.resize_to_fit_tiles(snap_window=checked)
 
     # -------- UI building --------
     def showEvent(self, event: QShowEvent) -> None:  # noqa: D401
@@ -810,7 +810,7 @@ class Main(QMainWindow):
             self.tabs_widget.addTab(scroll, tab)
             self._grids[tab] = grid
             self._populate_tab(tab)
-        QTimer.singleShot(0, self.resize_to_fit_tiles)
+        QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit))
         self._update_toggle_tab_action()
 
     def _populate_tab(self, tab: str) -> None:
@@ -880,18 +880,15 @@ class Main(QMainWindow):
         act = menu.addAction("Add Tile…")
         act.triggered.connect(lambda: self.add_tile(self.current_tab()))
         menu.exec(global_pos)
-
     def moveEvent(self, event: QMoveEvent) -> None:  # noqa: D401
         super().moveEvent(event)
-        if self.cfg.auto_fit and not self._fit_guard:
-            QTimer.singleShot(0, self.resize_to_fit_tiles)
-
+        # No snap on ordinary moves; screenChanged signal handles monitor transitions.
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401
         super().resizeEvent(event)
         if self.cfg.auto_fit and not self._fit_guard:
-            QTimer.singleShot(0, self.resize_to_fit_tiles)
-
-    def resize_to_fit_tiles(self) -> None:
+            # Reflow the grid to the new size but DO NOT snap the window back.
+            QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=False))
+    def resize_to_fit_tiles(self, *, snap_window: bool = True) -> None:
         if self._fit_guard:
             return
         self._fit_guard = True
@@ -911,10 +908,7 @@ class Main(QMainWindow):
                 self.windowHandle().screen()
                 if self.windowHandle() is not None
                 else QApplication.screenAt(self.frameGeometry().center())
-            )
-            if screen is None:
-                screen = QApplication.primaryScreen()
-            avail = screen.availableGeometry()
+            ) or QApplication.primaryScreen()
 
             frame_w = self.frameGeometry().width() - self.geometry().width()
             frame_h = self.frameGeometry().height() - self.geometry().height()
@@ -927,9 +921,17 @@ class Main(QMainWindow):
 
             columns_hint = None if self.cfg.auto_fit else self.cfg.columns
 
+            if snap_window:
+                avail_w = screen.availableGeometry().width()
+                avail_h = screen.availableGeometry().height()
+            else:
+                # Manual reflow: use the current *outer* window size as the budget.
+                avail_w = self.frameGeometry().width()
+                avail_h = self.frameGeometry().height()
+
             result = compute_grid_fit(
-                avail.width(),
-                avail.height(),
+                avail_w,
+                avail_h,
                 tile_w,
                 tile_h,
                 spacing,
@@ -939,7 +941,7 @@ class Main(QMainWindow):
                 frame_h,
                 sb_w,
                 tile_count,
-                columns_hint,
+                columns_hint
             )
 
             if self.cfg.auto_fit and result.columns != self._computed_columns:
@@ -949,22 +951,24 @@ class Main(QMainWindow):
             record_breadcrumb(
                 "fit_compute",
                 screen=getattr(screen, "name", lambda: "unknown")(),
-                avail_w=avail.width(),
-                avail_h=avail.height(),
+                avail_w=avail_w,
+                avail_h=avail_h,
                 tiles=tile_count,
                 hint_cols=columns_hint,
                 cols=result.columns,
                 rows_visible=result.rows_visible,
                 need_vscroll=result.need_vscroll,
+                snap_window=snap_window
             )
 
-            self.resize(result.window_w, result.window_h)
+            if snap_window:
+                self.resize(result.window_w, result.window_h)
             record_breadcrumb(
                 "fit_apply", window_w=result.window_w, window_h=result.window_h
             )
 
-            if tile_count > 0 and result.need_vscroll:
-                self.move(self.x(), avail.top())
+            if snap_window and tile_count > 0 and result.need_vscroll:
+                self.move(self.x(), screen.availableGeometry().top())
         finally:
             self._fit_guard = False
 
