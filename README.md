@@ -91,6 +91,17 @@ ensure "New browser window" always opens a separate top-level window.
 Existing configurations that lack this setting are automatically migrated and
 default to opening URLs in a new tab.
 
+### Auto-fit window
+
+The **View → Auto-fit Mode** submenu controls how the launcher resizes itself:
+
+- **Always** – recompute and resize on every move or display change.
+- **On startup** – fit once at launch (default), then allow manual resizing.
+- **Off** – never auto-resize; the window remembers its size and position.
+
+Choose **View → Fit to Display Now** for a one-off fit regardless of the
+current mode.
+
 ## Debugging & Crash Reports
 
 DesktopTileLauncher writes JSON logs to a rotating `debug.log` in a per-user

@@ -23,9 +23,10 @@ import shutil
 
 from PySide6.QtCore import (
     QEvent,
-    QObject,
     QMimeData,
+    QObject,
     QPoint,
+    QRect,
     QSize,
     Qt,
     QTimer,
@@ -33,11 +34,12 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QCloseEvent,
     QColor,
+    QContextMenuEvent,
     QDrag,
     QDragEnterEvent,
     QDropEvent,
-    QContextMenuEvent,
     QFont,
     QIcon,
     QMouseEvent,
@@ -76,6 +78,21 @@ from browser_chrome_win import (
 )
 
 APP_NAME = "TileLauncher"
+
+
+FitPolicy = Literal["always", "on_startup", "off"]
+FitTrigger = Literal["show", "move", "resize", "tab", "screen", "rebuild", "manual"]
+
+
+def should_fit(policy: FitPolicy, did_startup_fit: bool, trigger: FitTrigger) -> bool:
+    """Return ``True`` if an auto-fit should run for ``trigger``."""
+    if trigger == "manual":
+        return True
+    if policy == "always":
+        return True
+    if policy == "on_startup" and not did_startup_fit:
+        return True
+    return False
 
 
 def app_dirs():
@@ -253,7 +270,11 @@ class LauncherConfig:
     tiles: list["Tile"] = field(default_factory=list)
     tabs: list[str] = field(default_factory=lambda: ["Main"])
     hidden_tabs: list[str] = field(default_factory=list)
-    auto_fit: bool = True
+    fit_policy: FitPolicy = "on_startup"
+    last_width: int | None = None
+    last_height: int | None = None
+    last_x: int | None = None
+    last_y: int | None = None
 
     @staticmethod
     def load() -> "LauncherConfig":
@@ -270,13 +291,32 @@ class LauncherConfig:
                     tabs.append(tile.tab)
             hidden_raw = data.get("hidden_tabs") or []
             hidden_tabs = [t for t in hidden_raw if isinstance(t, str)]
+            raw_policy = data.get("fit_policy")
+            if raw_policy in {"always", "on_startup", "off"}:
+                fit_policy: FitPolicy = cast(FitPolicy, raw_policy)
+            else:
+                auto = data.get("auto_fit")
+                if auto is True:
+                    fit_policy = "always"
+                elif auto is False:
+                    fit_policy = "off"
+                else:
+                    fit_policy = "on_startup"
+            last_w = data.get("last_width")
+            last_h = data.get("last_height")
+            last_x = data.get("last_x")
+            last_y = data.get("last_y")
             cfg = LauncherConfig(
                 title=data.get("title", "Launcher"),
                 columns=data.get("columns", 5),
                 tiles=tiles,
                 tabs=tabs,
                 hidden_tabs=hidden_tabs,
-                auto_fit=data.get("auto_fit", True),
+                fit_policy=fit_policy,
+                last_width=last_w if isinstance(last_w, int) else None,
+                last_height=last_h if isinstance(last_h, int) else None,
+                last_x=last_x if isinstance(last_x, int) else None,
+                last_y=last_y if isinstance(last_y, int) else None,
             )
             enforce_tab_invariants(cfg)
             return cfg
@@ -291,7 +331,7 @@ class LauncherConfig:
             ],
             tabs=["Main"],
             hidden_tabs=[],
-            auto_fit=True,
+            fit_policy="on_startup",
         )
         enforce_tab_invariants(cfg)
         cfg.save()
@@ -310,8 +350,17 @@ class LauncherConfig:
             "tiles": tiles,
             "tabs": self.tabs,
             "hidden_tabs": self.hidden_tabs,
-            "auto_fit": self.auto_fit,
+            "fit_policy": self.fit_policy,
+            "auto_fit": self.fit_policy == "always",
         }
+        if self.last_width is not None:
+            data["last_width"] = self.last_width
+        if self.last_height is not None:
+            data["last_height"] = self.last_height
+        if self.last_x is not None:
+            data["last_x"] = self.last_x
+        if self.last_y is not None:
+            data["last_y"] = self.last_y
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -686,31 +735,32 @@ class Main(QMainWindow):
         self._enforce_tab_invariants()
         self.cfg.save()
         self._fit_guard = False
+        self._fit_policy: FitPolicy = self.cfg.fit_policy
+        self._did_startup_fit = False
 
         # -------- Startup auto-fit: materialize columns on config when enabled --------
-        if self.cfg.auto_fit:
+        if self._fit_policy != "off":
             wanted = _auto_fit_columns(len(self.cfg.tiles), self.cfg.columns)
             if wanted != self.cfg.columns:
                 self.cfg.columns = wanted
             self._computed_columns = self.cfg.columns
         else:
             self._computed_columns = self.cfg.columns
-            # Backwards‑compatibility heuristic for fixed columns.
+            # Backwards-compatibility heuristic for fixed columns.
             if len(self.cfg.tiles) > 36 and self.cfg.columns < 7:
                 self.cfg.columns = 7
             elif len(self.cfg.tiles) > 25 and self.cfg.columns < 6:
                 self.cfg.columns = 6
 
         self.setWindowTitle(self.cfg.title)
-
-        width, height = 900, 600
-        self.resize(width, height)
-        if not self.cfg.auto_fit and len(self.cfg.tiles) > 25:
+        self.setMinimumSize(360, 240)
+        self._restore_geometry(900, 600)
+        if self._fit_policy == "off" and len(self.cfg.tiles) > 25:
             cols = max(6, self.cfg.columns)
             tile_w, spacing, margins = 150, 12, 32
             needed_width = margins + cols * tile_w + (cols - 1) * spacing
-            if needed_width > width:
-                self.resize(needed_width, height)
+            if needed_width > self.width():
+                self.resize(needed_width, self.height())
 
         # toolbar and menus
         self.toolbar = QToolBar()
@@ -729,23 +779,29 @@ class Main(QMainWindow):
         tab_menu.addAction("Manage Tab Visibility…", self.manage_tab_visibility)
 
         view_menu = self.menuBar().addMenu("View")
-        self.auto_fit_action = QAction("Auto-fit Tiles to Display", self)
-        self.auto_fit_action.setCheckable(True)
-        self.auto_fit_action.setChecked(self.cfg.auto_fit)
-        self.auto_fit_action.toggled.connect(self._toggle_auto_fit)
-        view_menu.addAction(self.auto_fit_action)
+        fit_menu = view_menu.addMenu("Auto-fit Mode")
+        self._fit_actions: dict[str, QAction] = {}
+        for label, value in [
+            ("Always", "always"),
+            ("On startup", "on_startup"),
+            ("Off", "off"),
+        ]:
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.triggered.connect(
+                lambda _=False, v=value: self._set_fit_policy(cast(FitPolicy, v))
+            )
+            fit_menu.addAction(act)
+            self._fit_actions[value] = act
+        view_menu.addAction("Fit to Display Now", self._fit_once_now)
+        self._sync_fit_menu()
 
         debug_menu = self.menuBar().addMenu("Debug")
         debug_menu.addAction("Raise Exception", self._debug_raise)
         debug_menu.addAction("Qt Warning", lambda: qWarning("test"))
 
         self.tabs_widget = QTabWidget()
-        self.tabs_widget.currentChanged.connect(
-            lambda _=0: QTimer.singleShot(0, self.resize_to_fit_tiles)
-        )
-        self.tabs_widget.currentChanged.connect(
-            lambda _: self._update_toggle_tab_action()
-        )
+        self.tabs_widget.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs_widget)
 
         self._tab_viewports: set[QWidget] = set()
@@ -754,9 +810,7 @@ class Main(QMainWindow):
 
         wh = self.windowHandle()
         if wh is not None:
-            wh.screenChanged.connect(
-                lambda _s: QTimer.singleShot(0, self.resize_to_fit_tiles)
-            )
+            wh.screenChanged.connect(lambda _s: self._maybe_autofit("screen"))
 
     def _visible_tabs(self) -> list[str]:
         return [t for t in self.cfg.tabs if t not in self.cfg.hidden_tabs]
@@ -781,18 +835,77 @@ class Main(QMainWindow):
         allow_hide = not hidden and len(visible) > 1
         self.toggle_tab_action.setEnabled(hidden or allow_hide)
 
-    def _toggle_auto_fit(self, checked: bool) -> None:
-        self.cfg.auto_fit = checked
-        if not checked:
-            self._computed_columns = self.cfg.columns
+    def _set_fit_policy(self, policy: FitPolicy) -> None:
+        if policy == self._fit_policy:
+            return
+        self._fit_policy = policy
+        self.cfg.fit_policy = policy
         self.cfg.save()
-        self.rebuild()
-        self.resize_to_fit_tiles()
+        record_breadcrumb("fit_policy_changed", policy=policy)
+        self._did_startup_fit = policy != "on_startup"
+        self._sync_fit_menu()
+        if policy == "always":
+            self.resize_to_fit_tiles()
+        elif policy == "on_startup":
+            self._fit_once_now()
+
+    def _sync_fit_menu(self) -> None:
+        for value, act in self._fit_actions.items():
+            act.setChecked(value == self._fit_policy)
+
+    def _fit_once_now(self) -> None:
+        self._did_startup_fit = True
+        self.resize_to_fit_tiles(force=True)
+
+    def _maybe_autofit(self, trigger: FitTrigger) -> None:
+        if self._fit_guard:
+            return
+        if should_fit(self._fit_policy, self._did_startup_fit, trigger):
+            QTimer.singleShot(0, self.resize_to_fit_tiles)
+
+    def _on_tab_changed(self, _index: int) -> None:
+        self._update_toggle_tab_action()
+        self._maybe_autofit("tab")
+
+    def _restore_geometry(self, default_w: int, default_h: int) -> None:
+        if self._fit_policy == "always":
+            self.resize(default_w, default_h)
+            return
+        lw, lh, lx, ly = (
+            self.cfg.last_width,
+            self.cfg.last_height,
+            self.cfg.last_x,
+            self.cfg.last_y,
+        )
+        if None not in (lw, lh, lx, ly) and self._geometry_visible(lx, ly, lw, lh):
+            self.resize(lw, lh)
+            self.move(lx, ly)
+        else:
+            self._center_on_primary(default_w, default_h)
+
+    def _geometry_visible(self, x: int, y: int, w: int, h: int) -> bool:
+        rect = QRect(x, y, w, h)
+        for screen in QApplication.screens():
+            if screen.availableGeometry().intersects(rect):
+                return True
+        return False
+
+    def _center_on_primary(self, w: int, h: int) -> None:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            self.resize(w, h)
+            return
+        avail = screen.availableGeometry()
+        x = avail.left() + (avail.width() - w) // 2
+        y = avail.top() + (avail.height() - h) // 2
+        self.resize(w, h)
+        self.move(x, y)
 
     # -------- UI building --------
     def showEvent(self, event: QShowEvent) -> None:  # noqa: D401
         super().showEvent(event)
         record_breadcrumb("window_shown")
+        self._maybe_autofit("show")
 
     def rebuild(self) -> None:
         self.tabs_widget.clear()
@@ -810,7 +923,7 @@ class Main(QMainWindow):
             self.tabs_widget.addTab(scroll, tab)
             self._grids[tab] = grid
             self._populate_tab(tab)
-        QTimer.singleShot(0, self.resize_to_fit_tiles)
+        self._maybe_autofit("rebuild")
         self._update_toggle_tab_action()
 
     def _populate_tab(self, tab: str) -> None:
@@ -821,7 +934,7 @@ class Main(QMainWindow):
             if w:
                 w.deleteLater()
 
-        if self.cfg.auto_fit:
+        if self._fit_policy != "off":
             cols = max(1, int(self._computed_columns))
         else:
             cols = max(1, int(self.cfg.columns))
@@ -883,17 +996,20 @@ class Main(QMainWindow):
 
     def moveEvent(self, event: QMoveEvent) -> None:  # noqa: D401
         super().moveEvent(event)
-        if self.cfg.auto_fit and not self._fit_guard:
-            QTimer.singleShot(0, self.resize_to_fit_tiles)
+        self._maybe_autofit("move")
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401
         super().resizeEvent(event)
-        if self.cfg.auto_fit and not self._fit_guard:
-            QTimer.singleShot(0, self.resize_to_fit_tiles)
+        self._maybe_autofit("resize")
 
-    def resize_to_fit_tiles(self) -> None:
+    def resize_to_fit_tiles(self, *, force: bool = False) -> None:
         if self._fit_guard:
             return
+        if not force:
+            if self._fit_policy == "off":
+                return
+            if self._fit_policy == "on_startup" and self._did_startup_fit:
+                return
         self._fit_guard = True
         try:
             tile_w, tile_h = 150, 140
@@ -925,7 +1041,7 @@ class Main(QMainWindow):
             if sb_w <= 0:
                 sb_w = 16
 
-            columns_hint = None if self.cfg.auto_fit else self.cfg.columns
+            columns_hint = None if self._fit_policy != "off" else self.cfg.columns
 
             result = compute_grid_fit(
                 avail.width(),
@@ -942,7 +1058,7 @@ class Main(QMainWindow):
                 columns_hint,
             )
 
-            if self.cfg.auto_fit and result.columns != self._computed_columns:
+            if self._fit_policy != "off" and result.columns != self._computed_columns:
                 self._computed_columns = result.columns
                 self._populate_tab(current)
 
@@ -958,15 +1074,32 @@ class Main(QMainWindow):
                 need_vscroll=result.need_vscroll,
             )
 
-            self.resize(result.window_w, result.window_h)
-            record_breadcrumb(
-                "fit_apply", window_w=result.window_w, window_h=result.window_h
-            )
-
-            if tile_count > 0 and result.need_vscroll:
-                self.move(self.x(), avail.top())
+            if force or self._fit_policy in {"always", "on_startup"}:
+                self.resize(result.window_w, result.window_h)
+                record_breadcrumb(
+                    "fit_apply", window_w=result.window_w, window_h=result.window_h
+                )
+                if (
+                    self._fit_policy == "always"
+                    and tile_count > 0
+                    and result.need_vscroll
+                ):
+                    self.move(self.x(), avail.top())
         finally:
             self._fit_guard = False
+            if self._fit_policy == "on_startup":
+                self._did_startup_fit = True
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: D401
+        try:
+            self.cfg.last_width = int(self.width())
+            self.cfg.last_height = int(self.height())
+            self.cfg.last_x = int(self.x())
+            self.cfg.last_y = int(self.y())
+            self.cfg.fit_policy = self._fit_policy
+            self.cfg.save()
+        finally:
+            super().closeEvent(event)
 
     def current_tab(self) -> str:
         idx = self.tabs_widget.currentIndex()
