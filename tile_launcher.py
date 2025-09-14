@@ -856,16 +856,27 @@ class Main(QMainWindow):
         vp.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         vp.installEventFilter(self)
         self._tab_viewports.add(vp)
-
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
-        if event.type() == QEvent.Type.ContextMenu and obj in self._tab_viewports:
-            cme = cast(QContextMenuEvent, event)
-            global_pos = cast(QWidget, obj).mapToGlobal(cme.pos())
-            if not self._is_over_tile(global_pos):
-                self._show_whitespace_menu(global_pos)
-                return True
+        try:
+            if event.type() == QEvent.Type.ContextMenu and obj in self._tab_viewports:
+                cme = cast(QContextMenuEvent, event)
+                # Use the event's globalPos() to avoid touching the (possibly deleted) widget.
+                global_pos = cme.globalPos()
+                if not self._is_over_tile(global_pos):
+                    self._show_whitespace_menu(global_pos)
+                    return True
+                return False
+            return super().eventFilter(obj, event)
+        except Exception:
+            # Log and allow Qt to continue processing.
+            record_breadcrumb(
+                "event_filter_error",
+                etype=int(event.type()) if hasattr(event, "type") else None
+            )
+            logging.getLogger(__name__).exception(
+                "eventFilter error", extra=sanitize_log_extra({"event": "event_filter_error"})
+            )
             return False
-        return super().eventFilter(obj, event)
 
     def _is_over_tile(self, global_pos: QPoint) -> bool:
         w = QApplication.widgetAt(global_pos)
