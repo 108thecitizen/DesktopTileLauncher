@@ -322,10 +322,10 @@ class LauncherConfig:
             "tabs": self.tabs,
             "hidden_tabs": self.hidden_tabs,
             "auto_fit": self.auto_fit,
-	    "window_x": self.window_x,
-	    "window_y": self.window_y,
-	    "window_w": self.window_w,
-	    "window_h": self.window_h,
+            "window_x": self.window_x,
+            "window_y": self.window_y,
+            "window_w": self.window_w,
+            "window_h": self.window_h,
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -435,13 +435,17 @@ def compute_grid_fit(
     height = min(height, avail_h)
 
     return FitResult(columns, rows_visible, need_vscroll, int(width), int(height))
+
+
 # ---------------------------------------------------------------------------
 # Fit policy shim used by unit tests.
 # Pure functions — no Qt or side effects.
 # ---------------------------------------------------------------------------
 
+
 class FitPolicy(Enum):
     """When is snap‑to‑fit allowed automatically?"""
+
     ALWAYS = auto()
     ON_STARTUP = auto()
     OFF = auto()
@@ -449,10 +453,11 @@ class FitPolicy(Enum):
 
 class FitTrigger(Enum):
     """What caused us to consider fitting?"""
-    SHOW = auto()     # first show
-    RESIZE = auto()   # user dragged resize
-    MOVE = auto()     # window moved / screen change
-    MANUAL = auto()   # explicit user command (always allowed)
+
+    SHOW = auto()  # first show
+    RESIZE = auto()  # user dragged resize
+    MOVE = auto()  # window moved / screen change
+    MANUAL = auto()  # explicit user command (always allowed)
 
 
 def _coerce_policy(v: "FitPolicy | str") -> FitPolicy:
@@ -479,7 +484,9 @@ def _coerce_trigger(v: "FitTrigger | str") -> FitTrigger:
     return FitTrigger.MANUAL
 
 
-def should_fit(policy: "FitPolicy | str", did_snap: bool, trigger: "FitTrigger | str") -> bool:
+def should_fit(
+    policy: "FitPolicy | str", did_snap: bool, trigger: "FitTrigger | str"
+) -> bool:
     """
     Decide whether to snap the outer window to a computed fit, given a policy,
     whether we've already snapped once this session (did_snap), and the trigger.
@@ -501,7 +508,6 @@ def should_fit(policy: "FitPolicy | str", did_snap: bool, trigger: "FitTrigger |
 
     # Policy ALWAYS: snap on show/move/resize.
     return t in {FitTrigger.SHOW, FitTrigger.MOVE, FitTrigger.RESIZE}
-
 
 
 def _auto_fit_columns(n_tiles: int, current_cols: int) -> int:
@@ -788,7 +794,11 @@ class Main(QMainWindow):
         width, height = 900, 600
         self.resize(width, height)
 
-        screen = self.windowHandle().screen() if self.windowHandle() is not None else QApplication.primaryScreen()
+        screen = (
+            self.windowHandle().screen()
+            if self.windowHandle() is not None
+            else QApplication.primaryScreen()
+        )
         avail = screen.availableGeometry() if screen is not None else None
 
         if not self.cfg.auto_fit:
@@ -798,8 +808,12 @@ class Main(QMainWindow):
                 h = min(int(self.cfg.window_h), avail.height())
                 self.resize(w, h)
                 if self.cfg.window_x is not None and self.cfg.window_y is not None:
-                    x = max(avail.left(),  min(int(self.cfg.window_x), avail.right()  - w))
-                    y = max(avail.top(),   min(int(self.cfg.window_y), avail.bottom() - h))
+                    x = max(
+                        avail.left(), min(int(self.cfg.window_x), avail.right() - w)
+                    )
+                    y = max(
+                        avail.top(), min(int(self.cfg.window_y), avail.bottom() - h)
+                    )
                     self.move(x, y)
                 record_breadcrumb("geometry_restore", w=w, h=h)
                 applied = True
@@ -809,11 +823,10 @@ class Main(QMainWindow):
                 needed_width = margins + cols * tile_w + (cols - 1) * spacing
                 if avail is not None:
                     w = min(needed_width, avail.width())
-                    h = min(height,      avail.height())
+                    h = min(height, avail.height())
                     self.resize(w, h)
                 else:
                     self.resize(needed_width, height)
-
 
         # toolbar and menus
         self.toolbar = QToolBar()
@@ -844,7 +857,9 @@ class Main(QMainWindow):
 
         self.tabs_widget = QTabWidget()
         self.tabs_widget.currentChanged.connect(
-            lambda _=0: QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit))
+            lambda _=0: QTimer.singleShot(
+                0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit)
+            )
         )
         self.tabs_widget.currentChanged.connect(
             lambda _: self._update_toggle_tab_action()
@@ -858,7 +873,9 @@ class Main(QMainWindow):
         wh = self.windowHandle()
         if wh is not None:
             wh.screenChanged.connect(
-                lambda _s: QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit))
+                lambda _s: QTimer.singleShot(
+                    0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit)
+                )
             )
 
     def _visible_tabs(self) -> list[str]:
@@ -913,7 +930,9 @@ class Main(QMainWindow):
             self.tabs_widget.addTab(scroll, tab)
             self._grids[tab] = grid
             self._populate_tab(tab)
-        QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit))
+        QTimer.singleShot(
+            0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit)
+        )
         self._update_toggle_tab_action()
 
     def _populate_tab(self, tab: str) -> None:
@@ -959,6 +978,7 @@ class Main(QMainWindow):
         vp.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         vp.installEventFilter(self)
         self._tab_viewports.add(vp)
+
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
         try:
             if event.type() == QEvent.Type.ContextMenu and obj in self._tab_viewports:
@@ -974,10 +994,11 @@ class Main(QMainWindow):
             # Log and allow Qt to continue processing.
             record_breadcrumb(
                 "event_filter_error",
-                etype=int(event.type()) if hasattr(event, "type") else None
+                etype=int(event.type()) if hasattr(event, "type") else None,
             )
             logging.getLogger(__name__).exception(
-                "eventFilter error", extra=sanitize_log_extra({"event": "event_filter_error"})
+                "eventFilter error",
+                extra=sanitize_log_extra({"event": "event_filter_error"}),
             )
             return False
 
@@ -994,14 +1015,17 @@ class Main(QMainWindow):
         act = menu.addAction("Add Tile…")
         act.triggered.connect(lambda: self.add_tile(self.current_tab()))
         menu.exec(global_pos)
+
     def moveEvent(self, event: QMoveEvent) -> None:  # noqa: D401
         super().moveEvent(event)
         # No snap on ordinary moves; screenChanged signal handles monitor transitions.
+
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: D401
         super().resizeEvent(event)
         if self.cfg.auto_fit and not self._fit_guard:
             # Reflow the grid to the new size but DO NOT snap the window back.
             QTimer.singleShot(0, lambda: self.resize_to_fit_tiles(snap_window=False))
+
     def resize_to_fit_tiles(self, *, snap_window: bool = True) -> None:
         if self._fit_guard:
             return
@@ -1055,7 +1079,7 @@ class Main(QMainWindow):
                 frame_h,
                 sb_w,
                 tile_count,
-                columns_hint
+                columns_hint,
             )
 
             if self.cfg.auto_fit and result.columns != self._computed_columns:
@@ -1072,7 +1096,7 @@ class Main(QMainWindow):
                 cols=result.columns,
                 rows_visible=result.rows_visible,
                 need_vscroll=result.need_vscroll,
-                snap_window=snap_window
+                snap_window=snap_window,
             )
 
             if snap_window:
@@ -1094,9 +1118,13 @@ class Main(QMainWindow):
             self.cfg.window_x = int(g.x())
             self.cfg.window_y = int(g.y())
             self.cfg.save()
-            record_breadcrumb("geometry_saved",
-                              w=self.cfg.window_w, h=self.cfg.window_h,
-                              x=self.cfg.window_x, y=self.cfg.window_y)
+            record_breadcrumb(
+                "geometry_saved",
+                w=self.cfg.window_w,
+                h=self.cfg.window_h,
+                x=self.cfg.window_x,
+                y=self.cfg.window_y,
+            )
         finally:
             super().closeEvent(event)
 

@@ -354,6 +354,7 @@ class CrashDialog(QDialog):  # pragma: no cover - GUI code
         QApplication.clipboard().setText(
             json.dumps(self._context, indent=2, ensure_ascii=False)
         )
+
     def open_logs(self) -> None:
         path = str(self._log_dir)
         try:
@@ -377,7 +378,9 @@ class CrashDialog(QDialog):  # pragma: no cover - GUI code
                 extra=sanitize_log_extra({"event": "open_logs_failed", "path": path}),
             )
             # Best-effort UI notice; we are already in a dialog.
-            QMessageBox.warning(self, "Open Log Folder", f"Could not open: {path}\n\n{exc}")
+            QMessageBox.warning(
+                self, "Open Log Folder", f"Could not open: {path}\n\n{exc}"
+            )
 
     def create_bundle(self) -> None:
         bundle = create_crash_bundle(self._log_dir, self._context)
