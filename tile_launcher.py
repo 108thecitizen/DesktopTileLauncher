@@ -19,6 +19,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Literal, Optional, cast
+from enum import Enum, auto
 import shutil
 
 from PySide6.QtCore import (
@@ -434,6 +435,62 @@ def compute_grid_fit(
     height = min(height, avail_h)
 
     return FitResult(columns, rows_visible, need_vscroll, int(width), int(height))
+
+# ---------------------------------------------------------------------------
+# Fit policy shim for unit tests
+# ---------------------------------------------------------------------------
+
+class FitPolicy(Enum):
+    """When is snap-to-fit allowed?"""
+    AUTO = auto()     # Snap when Auto-fit is ON (the app's default behavior)
+    ALWAYS = auto()   # Always snap (used by some edge-case tests)
+    NEVER = auto()    # Never snap (explicitly disable snapping)
+
+# Back-compat alias some tests may use
+FitPolicy.DEFAULT = FitPolicy.AUTO  # type: ignore[attr-defined]
+
+
+class FitTrigger(Enum):
+    """Event that might request a fit/snap."""
+    STARTUP = auto()
+    TAB_CHANGED = auto()
+    SCREEN_CHANGED = auto()
+    REBUILD = auto()
+    MANUAL_RESIZE = auto()
+    MOVE = auto()
+    TOGGLE_ON = auto()   # user turned Auto-fit ON
+    TOGGLE_OFF = auto()  # user turned Auto-fit OFF
+
+
+def should_fit(auto_fit: bool,
+               trigger: FitTrigger,
+               policy: FitPolicy = FitPolicy.AUTO) -> bool:
+    """
+    Return True if we should *snap the outer window size* for this trigger.
+
+    Semantics mirror the live UI:
+      • Manual resize/move never snap.
+      • Startup / tab / screen / rebuild snap only when Auto‑fit is ON.
+      • Toggling Auto‑fit snaps immediately only when turning it ON.
+    The 'policy' parameter lets tests force ALWAYS/NEVER if needed.
+    """
+    if policy is FitPolicy.NEVER:
+        return False
+    if policy is FitPolicy.ALWAYS:
+        return True
+
+    # Manual interactions never snap the window.
+    if trigger in (FitTrigger.MANUAL_RESIZE, FitTrigger.MOVE):
+        return False
+
+    # Toggling Auto-fit snaps only on enable.
+    if trigger is FitTrigger.TOGGLE_ON:
+        return True
+    if trigger is FitTrigger.TOGGLE_OFF:
+        return False
+
+    # Startup / tab change / screen change / rebuild => snap iff Auto‑fit is on.
+    return bool(auto_fit)
 
 
 def _auto_fit_columns(n_tiles: int, current_cols: int) -> int:
