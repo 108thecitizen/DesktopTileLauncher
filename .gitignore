@@ -401,3 +401,6 @@ bandit.json
 /vendor/wheelhouse-linux/pyside6_addons-*.whl
 
 DesktopTileLauncher-v*.zip
+tile_launcher.py.bak*
+*.before-resize-fix
+apply_geometry_patch.py
