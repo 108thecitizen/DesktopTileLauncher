@@ -354,30 +354,30 @@ class CrashDialog(QDialog):  # pragma: no cover - GUI code
         QApplication.clipboard().setText(
             json.dumps(self._context, indent=2, ensure_ascii=False)
         )
-
     def open_logs(self) -> None:
         path = str(self._log_dir)
-        p = Path(path).expanduser().resolve(strict=True)
-
-        if sys.platform.startswith("win"):
-            # Prefer absolute path to explorer.exe instead of os.startfile (avoids B606).
-            explorer = shutil.which("explorer") or os.path.join(
-                os.environ.get("SystemRoot", r"C:\Windows"), "explorer.exe"
+        try:
+            p = Path(path).expanduser().resolve(strict=True)
+            if sys.platform.startswith("win"):
+                # Prefer absolute path to explorer.exe instead of os.startfile (avoids B606).
+                explorer = shutil.which("explorer") or os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"), "explorer.exe"
+                )
+                # Use Popen and ignore exit code; explorer often returns 1 even on success.
+                subprocess.Popen([explorer, str(p)], close_fds=True, shell=False)  # nosec B603
+            elif sys.platform == "darwin":
+                opener = shutil.which("open") or "/usr/bin/open"
+                subprocess.Popen([opener, str(p)], close_fds=True, shell=False)  # nosec B603
+            else:
+                opener = shutil.which("xdg-open") or "/usr/bin/xdg-open"
+                subprocess.Popen([opener, str(p)], close_fds=True, shell=False)  # nosec B603
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "open_logs failed",
+                extra=sanitize_log_extra({"event": "open_logs_failed", "path": path}),
             )
-            # Absolute executable + validated absolute target path.
-            subprocess.run([explorer, str(p)], check=True)  # nosec B603
-
-        elif sys.platform == "darwin":
-            opener = (
-                shutil.which("open") or "/usr/bin/open"
-            )  # absolute path avoids B607
-            subprocess.run([opener, str(p)], check=True)  # nosec B603
-
-        else:
-            opener = (
-                shutil.which("xdg-open") or "/usr/bin/xdg-open"
-            )  # absolute path avoids B607
-            subprocess.run([opener, str(p)], check=True)  # nosec B603
+            # Best-effort UI notice; we are already in a dialog.
+            QMessageBox.warning(self, "Open Log Folder", f"Could not open: {path}\n\n{exc}")
 
     def create_bundle(self) -> None:
         bundle = create_crash_bundle(self._log_dir, self._context)
