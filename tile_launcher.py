@@ -47,6 +47,8 @@ from PySide6.QtGui import (
     QResizeEvent,
     QShowEvent,
 )
+
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -254,6 +256,10 @@ class LauncherConfig:
     tabs: list[str] = field(default_factory=lambda: ["Main"])
     hidden_tabs: list[str] = field(default_factory=list)
     auto_fit: bool = True
+    window_x: Optional[int] = None
+    window_y: Optional[int] = None
+    window_w: Optional[int] = None
+    window_h: Optional[int] = None
 
     @staticmethod
     def load() -> "LauncherConfig":
@@ -277,6 +283,10 @@ class LauncherConfig:
                 tabs=tabs,
                 hidden_tabs=hidden_tabs,
                 auto_fit=data.get("auto_fit", True),
+                window_x=data.get("window_x"),
+                window_y=data.get("window_y"),
+                window_w=data.get("window_w"),
+                window_h=data.get("window_h"),
             )
             enforce_tab_invariants(cfg)
             return cfg
@@ -311,6 +321,10 @@ class LauncherConfig:
             "tabs": self.tabs,
             "hidden_tabs": self.hidden_tabs,
             "auto_fit": self.auto_fit,
+	    "window_x": self.window_x,
+	    "window_y": self.window_y,
+	    "window_w": self.window_w,
+	    "window_h": self.window_h,
         }
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -705,12 +719,33 @@ class Main(QMainWindow):
 
         width, height = 900, 600
         self.resize(width, height)
-        if not self.cfg.auto_fit and len(self.cfg.tiles) > 25:
-            cols = max(6, self.cfg.columns)
-            tile_w, spacing, margins = 150, 12, 32
-            needed_width = margins + cols * tile_w + (cols - 1) * spacing
-            if needed_width > width:
-                self.resize(needed_width, height)
+
+        screen = self.windowHandle().screen() if self.windowHandle() is not None else QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else None
+
+        if not self.cfg.auto_fit:
+            applied = False
+            if self.cfg.window_w and self.cfg.window_h and avail is not None:
+                w = min(int(self.cfg.window_w), avail.width())
+                h = min(int(self.cfg.window_h), avail.height())
+                self.resize(w, h)
+                if self.cfg.window_x is not None and self.cfg.window_y is not None:
+                    x = max(avail.left(),  min(int(self.cfg.window_x), avail.right()  - w))
+                    y = max(avail.top(),   min(int(self.cfg.window_y), avail.bottom() - h))
+                    self.move(x, y)
+                record_breadcrumb("geometry_restore", w=w, h=h)
+                applied = True
+            if not applied and len(self.cfg.tiles) > 25:
+                cols = max(6, self.cfg.columns)
+                tile_w, spacing, margins = 150, 12, 32
+                needed_width = margins + cols * tile_w + (cols - 1) * spacing
+                if avail is not None:
+                    w = min(needed_width, avail.width())
+                    h = min(height,      avail.height())
+                    self.resize(w, h)
+                else:
+                    self.resize(needed_width, height)
+
 
         # toolbar and menus
         self.toolbar = QToolBar()
@@ -982,6 +1017,20 @@ class Main(QMainWindow):
                 self.move(self.x(), screen.availableGeometry().top())
         finally:
             self._fit_guard = False
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: D401
+        try:
+            g = self.normalGeometry() if self.isMaximized() else self.frameGeometry()
+            self.cfg.window_w = int(g.width())
+            self.cfg.window_h = int(g.height())
+            self.cfg.window_x = int(g.x())
+            self.cfg.window_y = int(g.y())
+            self.cfg.save()
+            record_breadcrumb("geometry_saved",
+                              w=self.cfg.window_w, h=self.cfg.window_h,
+                              x=self.cfg.window_x, y=self.cfg.window_y)
+        finally:
+            super().closeEvent(event)
 
     def current_tab(self) -> str:
         idx = self.tabs_widget.currentIndex()
