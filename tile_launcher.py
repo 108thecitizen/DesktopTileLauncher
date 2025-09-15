@@ -435,62 +435,73 @@ def compute_grid_fit(
     height = min(height, avail_h)
 
     return FitResult(columns, rows_visible, need_vscroll, int(width), int(height))
-
 # ---------------------------------------------------------------------------
-# Fit policy shim for unit tests
+# Fit policy shim used by unit tests.
+# Pure functions — no Qt or side effects.
 # ---------------------------------------------------------------------------
 
 class FitPolicy(Enum):
-    """When is snap-to-fit allowed?"""
-    AUTO = auto()     # Snap when Auto-fit is ON (the app's default behavior)
-    ALWAYS = auto()   # Always snap (used by some edge-case tests)
-    NEVER = auto()    # Never snap (explicitly disable snapping)
-
-# Back-compat alias some tests may use
-FitPolicy.DEFAULT = FitPolicy.AUTO  # type: ignore[attr-defined]
+    """When is snap‑to‑fit allowed automatically?"""
+    ALWAYS = auto()
+    ON_STARTUP = auto()
+    OFF = auto()
 
 
 class FitTrigger(Enum):
-    """Event that might request a fit/snap."""
-    STARTUP = auto()
-    TAB_CHANGED = auto()
-    SCREEN_CHANGED = auto()
-    REBUILD = auto()
-    MANUAL_RESIZE = auto()
-    MOVE = auto()
-    TOGGLE_ON = auto()   # user turned Auto-fit ON
-    TOGGLE_OFF = auto()  # user turned Auto-fit OFF
+    """What caused us to consider fitting?"""
+    SHOW = auto()     # first show
+    RESIZE = auto()   # user dragged resize
+    MOVE = auto()     # window moved / screen change
+    MANUAL = auto()   # explicit user command (always allowed)
 
 
-def should_fit(auto_fit: bool,
-               trigger: FitTrigger,
-               policy: FitPolicy = FitPolicy.AUTO) -> bool:
+def _coerce_policy(v: "FitPolicy | str") -> FitPolicy:
+    if isinstance(v, FitPolicy):
+        return v
+    s = str(v).lower()
+    if s == "always":
+        return FitPolicy.ALWAYS
+    if s in {"on_startup", "startup"}:
+        return FitPolicy.ON_STARTUP
+    return FitPolicy.OFF
+
+
+def _coerce_trigger(v: "FitTrigger | str") -> FitTrigger:
+    if isinstance(v, FitTrigger):
+        return v
+    s = str(v).lower()
+    if s == "show":
+        return FitTrigger.SHOW
+    if s == "resize":
+        return FitTrigger.RESIZE
+    if s in {"move", "screen", "screen_change", "screenchanged"}:
+        return FitTrigger.MOVE
+    return FitTrigger.MANUAL
+
+
+def should_fit(policy: "FitPolicy | str", did_snap: bool, trigger: "FitTrigger | str") -> bool:
     """
-    Return True if we should *snap the outer window size* for this trigger.
-
-    Semantics mirror the live UI:
-      • Manual resize/move never snap.
-      • Startup / tab / screen / rebuild snap only when Auto‑fit is ON.
-      • Toggling Auto‑fit snaps immediately only when turning it ON.
-    The 'policy' parameter lets tests force ALWAYS/NEVER if needed.
+    Decide whether to snap the outer window to a computed fit, given a policy,
+    whether we've already snapped once this session (did_snap), and the trigger.
     """
-    if policy is FitPolicy.NEVER:
-        return False
-    if policy is FitPolicy.ALWAYS:
+    p = _coerce_policy(policy)
+    t = _coerce_trigger(trigger)
+
+    # Manual "fit now" is always allowed.
+    if t == FitTrigger.MANUAL:
         return True
 
-    # Manual interactions never snap the window.
-    if trigger in (FitTrigger.MANUAL_RESIZE, FitTrigger.MOVE):
+    # Policy OFF: never snap automatically.
+    if p == FitPolicy.OFF:
         return False
 
-    # Toggling Auto-fit snaps only on enable.
-    if trigger is FitTrigger.TOGGLE_ON:
-        return True
-    if trigger is FitTrigger.TOGGLE_OFF:
-        return False
+    # Policy ON_STARTUP: snap only on the very first show.
+    if p == FitPolicy.ON_STARTUP:
+        return (t == FitTrigger.SHOW) and (not did_snap)
 
-    # Startup / tab change / screen change / rebuild => snap iff Auto‑fit is on.
-    return bool(auto_fit)
+    # Policy ALWAYS: snap on show/move/resize.
+    return t in {FitTrigger.SHOW, FitTrigger.MOVE, FitTrigger.RESIZE}
+
 
 
 def _auto_fit_columns(n_tiles: int, current_cols: int) -> int:
