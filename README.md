@@ -3,6 +3,14 @@
 [![Build](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml)
 [![Release](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml/badge.svg)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml)
 
+## Why this exists / what I learned
+
+- Built to reduce daily friction: a lightweight Windows desktop launcher for quickly opening frequently-used apps, folders, and links.
+- Used as a sandbox for AI-assisted development and agent workflows — iterating with Codex/ChatGPT/Claude and capturing “how to work on this repo” conventions in `AGENTS.md`.
+- Reinforced “ship means stable”: small diffs, PR-friendly iteration, and automated checks so changes stay predictable as the project evolves.
+- Practiced release discipline: tag-driven releases via GitHub Actions, plus a documented path toward signed binaries so end-user downloads can be trusted.
+- Biggest takeaway: AI can accelerate iteration, but automation + clarity (tests/CI + explicit conventions) are the real guardrails.
+
 ## Code signing policy
 
 Free code signing provided by SignPath.io, certificate by SignPath Foundation.
