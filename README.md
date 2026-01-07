@@ -1,10 +1,24 @@
 # DesktopTileLauncher
 
-<img src="assets/desktoptilelauncher-main.png" width="700" alt="DesktopTileLauncher main window" />
+A lightweight Windows desktop launcher for quickly opening frequently-used apps, folders, and links — built as a sandbox for GenAI-assisted development + release discipline.
+
+<p align="center">
+  <a href="https://github.com/108thecitizen/DesktopTileLauncher/releases/latest">
+    <img src="assets/desktoptilelauncher-main.png" width="700" alt="DesktopTileLauncher main window" />
+  </a>
+</p>
+
+
+<p align="center">
+  <img src="assets/demo-launch.gif" width="900" alt="Demo: click a tile to launch an app" />
+</p>
+
 
 [⬇️ Download the latest release](https://github.com/108thecitizen/DesktopTileLauncher/releases/latest)
 [![Build](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml)
 [![Release](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml/badge.svg)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml)
+
+
 
 ## Why this exists / what I learned
 
