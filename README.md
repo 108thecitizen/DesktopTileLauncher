@@ -1,4 +1,7 @@
 # DesktopTileLauncher
+
+<img src="assets/desktoptilelauncher-main.png" width="700" alt="DesktopTileLauncher main window" />
+
 [⬇️ Download the latest release](https://github.com/108thecitizen/DesktopTileLauncher/releases/latest)
 [![Build](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml)
 [![Release](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml/badge.svg)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml)
