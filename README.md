@@ -23,6 +23,11 @@ A lightweight Windows desktop launcher for quickly opening frequently-used apps,
 [![Build](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/build.yml)
 [![Release](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml/badge.svg)](https://github.com/108thecitizen/DesktopTileLauncher/actions/workflows/release-tag.yml)
 
+## Install
+
+### WinGet (recommended)
+```powershell
+winget install --id DesktopTileLauncher -e
 
 
 ## Why this exists / what I learned
