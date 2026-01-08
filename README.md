@@ -2,15 +2,20 @@
 
 A lightweight Windows desktop launcher for quickly opening frequently-used apps, folders, and links — built as a sandbox for GenAI-assisted development + release discipline.
 
+
+## Quick demo
+
 <p align="center">
   <a href="https://github.com/108thecitizen/DesktopTileLauncher/releases/latest">
-    <img src="assets/desktoptilelauncher-main.png" width="700" alt="DesktopTileLauncher main window" />
-  </a>
+    <img src="assets/demo-launch.gif" width="900" alt="Demo: click a tile to launch an app" />
+    </a>
 </p>
 
 
+## Screenshot
+
 <p align="center">
-  <img src="assets/demo-launch.gif" width="900" alt="Demo: click a tile to launch an app" />
+    <img src="assets/desktoptilelauncher-main.png" width="700" alt="DesktopTileLauncher main window" />
 </p>
 
 
