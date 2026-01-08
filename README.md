@@ -27,7 +27,22 @@ A lightweight Windows desktop launcher for quickly opening frequently-used apps,
 
 ### WinGet (recommended)
 
-`winget install --id DesktopTileLauncher -e`
+```powershell
+winget install --id 108thecitizen.DesktopTileLauncher -e
+```
+
+### Upgrade
+
+```powershell
+winget upgrade --id 108thecitizen.DesktopTileLauncher -e
+```
+
+### Uninstall
+
+```powershell
+winget uninstall --id 108thecitizen.DesktopTileLauncher -e
+```
+
 
 
 ## Why this exists / what I learned
