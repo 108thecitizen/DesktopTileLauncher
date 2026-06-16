@@ -1,5 +1,5 @@
 # Testing
-pytest>=8.2,<9
+pytest>=8.2,<10
 pytest-mock>=3.14,<4
 
 # Linting / Typing (present or planned in Makefile)
