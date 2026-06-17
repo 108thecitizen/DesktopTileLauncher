@@ -10,12 +10,14 @@ tests can import the module even when PySide6/Qt is not available.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 import faulthandler
 import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
 import platform
+import re
 import signal
 import subprocess  # nosec B404: used to launch local apps; inputs validated & shell=False
 
@@ -146,15 +148,16 @@ def sanitize_log_extra(extra: dict[str, Any] | None) -> dict[str, Any] | None:
 
     sanitized: dict[str, Any] = {}
     for key, value in extra.items():
+        clean_value = sanitize_diagnostic_value(value)
         if key in _RESERVED_LOG_KEYS:
             if key == "name":
-                sanitized["tile_name"] = value
+                sanitized["tile_name"] = clean_value
             elif key == "message":
-                sanitized["event_message"] = value
+                sanitized["event_message"] = clean_value
             else:
-                sanitized[f"extra_{key}"] = value
+                sanitized[f"extra_{key}"] = clean_value
         else:
-            sanitized[key] = value
+            sanitized[key] = clean_value
     return sanitized
 
 
@@ -165,7 +168,7 @@ def record_breadcrumb(event: str, **fields: Any) -> None:
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
     }
-    entry.update(fields)
+    entry.update(sanitize_diagnostic_mapping(fields))
     _breadcrumbs.append(entry)
     logging.getLogger("breadcrumb").debug("", extra=sanitize_log_extra(entry))
 
@@ -177,10 +180,16 @@ def get_breadcrumbs() -> list[dict[str, Any]]:
 
 
 SENSITIVE_KEYS = {"token", "code", "session", "auth", "key", "password"}
+_URL_IN_TEXT_RE = re.compile(
+    "(?P<url>(?:[a-z][a-z0-9+.-]*://|www\\.)[^\\s\"'<>]+)",
+    re.IGNORECASE,
+)
+_FRAGMENT_REDACTION = "REDACTED"
+_QUERY_REDACTION = "REDACTED"
 
 
 def sanitize_url(url: str) -> str:
-    """Strip credentials and sensitive query parameters from *url*."""
+    """Strip credentials and redact query values/fragments from *url*."""
 
     try:
         parsed = urllib.parse.urlsplit(url)
@@ -188,11 +197,63 @@ def sanitize_url(url: str) -> str:
         return url
     netloc = parsed.netloc.split("@")[-1]
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    redacted = [(k, "REDACTED" if k.lower() in SENSITIVE_KEYS else v) for k, v in query]
+    redacted = [(k, _QUERY_REDACTION) for k, _v in query]
     new_query = urllib.parse.urlencode(redacted)
+    fragment = _FRAGMENT_REDACTION if parsed.fragment else ""
     return urllib.parse.urlunsplit(
-        (parsed.scheme, netloc, parsed.path, new_query, parsed.fragment)
+        (parsed.scheme, netloc, parsed.path, new_query, fragment)
     )
+
+
+def _looks_like_standalone_url(value: str) -> bool:
+    stripped = value.strip()
+    if not stripped or any(ch.isspace() for ch in stripped):
+        return False
+
+    parsed = urllib.parse.urlsplit(stripped)
+    if parsed.scheme and len(parsed.scheme) > 1:
+        return bool(parsed.netloc or parsed.query or parsed.fragment)
+    if parsed.netloc:
+        return True
+
+    first_segment = parsed.path.split("/", 1)[0]
+    return "." in first_segment and any(
+        marker in stripped for marker in ("?", "#", "@")
+    )
+
+
+def _sanitize_text(value: str) -> str:
+    if _looks_like_standalone_url(value):
+        return sanitize_url(value)
+    return _URL_IN_TEXT_RE.sub(lambda match: sanitize_url(match.group("url")), value)
+
+
+def sanitize_launch_command(command: Iterable[str] | None) -> list[str] | None:
+    """Return a copy of *command* with URL-bearing arguments redacted."""
+
+    if command is None:
+        return None
+    return [_sanitize_text(part) for part in command]
+
+
+def sanitize_diagnostic_value(value: Any) -> Any:
+    """Redact URL-like strings inside diagnostic values."""
+
+    if isinstance(value, str):
+        return _sanitize_text(value)
+    if isinstance(value, dict):
+        return {key: sanitize_diagnostic_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_diagnostic_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_diagnostic_value(item) for item in value)
+    return value
+
+
+def sanitize_diagnostic_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Redact URL-like strings inside a diagnostic mapping."""
+
+    return {key: sanitize_diagnostic_value(value) for key, value in mapping.items()}
 
 
 def _log_dir(app_name: str) -> Path:
@@ -261,7 +322,7 @@ def collect_runtime_context(app: QApplication | None) -> dict[str, Any]:
 
     ctx["last_launch_command"] = last_launch_command
     ctx["breadcrumbs"] = get_breadcrumbs()[-20:]
-    return ctx
+    return sanitize_diagnostic_mapping(ctx)
 
 
 def create_crash_bundle(log_dir: Path, context: dict[str, Any]) -> Path:
@@ -270,7 +331,8 @@ def create_crash_bundle(log_dir: Path, context: dict[str, Any]) -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     bundle = log_dir / f"crash-{ts}.zip"
     crash_json = log_dir / "crash.json"
-    crash_json.write_text(json.dumps(context, indent=2), encoding="utf-8")
+    safe_context = sanitize_diagnostic_mapping(context)
+    crash_json.write_text(json.dumps(safe_context, indent=2), encoding="utf-8")
     with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in log_dir.glob("debug.log*"):
             zf.write(path, path.name)

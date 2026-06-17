@@ -70,7 +70,12 @@ from PySide6.QtWidgets import (
 )
 
 import debug_scaffold
-from debug_scaffold import record_breadcrumb, sanitize_log_extra, sanitize_url
+from debug_scaffold import (
+    record_breadcrumb,
+    sanitize_launch_command,
+    sanitize_log_extra,
+    sanitize_url,
+)
 from tile_editor_dialog import TileEditorDialog
 from browser_chrome_win import (
     is_windows_default_browser_chrome,
@@ -1140,6 +1145,7 @@ class Main(QMainWindow):
         logger = logging.getLogger(__name__)
         plan = build_launch_plan(tile)
         url = sanitize_url(tile.url)
+        sanitized_command = sanitize_launch_command(plan.command)
         record_breadcrumb(
             "launch_attempt",
             name=tile.name,
@@ -1151,7 +1157,7 @@ class Main(QMainWindow):
             "launch_plan",
             browser=plan.browser_name or "default",
             open_target=plan.open_target,
-            command=plan.command,
+            command=sanitized_command,
             controller=plan.controller,
             new=plan.new,
         )
@@ -1161,7 +1167,7 @@ class Main(QMainWindow):
                 {
                     "event": "browser_launch_attempt",
                     "browser": plan.browser_name or "default",
-                    "flags": plan.command[1:-1] if plan.command else [],
+                    "flags": sanitized_command[1:-1] if sanitized_command else [],
                     "profile": plan.profile,
                     "open_target": plan.open_target,
                     "url": url,
@@ -1268,14 +1274,16 @@ class Main(QMainWindow):
         # --- Explicit controller CLI path (firefox/chrome/edge, etc.) ---
         if plan.command:
             try:
-                debug_scaffold.last_launch_command = " ".join(plan.command)
+                debug_scaffold.last_launch_command = (
+                    " ".join(sanitized_command) if sanitized_command else None
+                )
                 subprocess.Popen(plan.command, close_fds=True)  # nosec B603
                 record_breadcrumb(
                     "launch_path",
                     path="browser_cli",
                     browser=plan.browser_name or "default",
                     open_target=plan.open_target,
-                    cmd=plan.command,
+                    cmd=sanitized_command,
                 )
                 record_breadcrumb("launch_result", ok=True, url=url)
                 logger.info(
@@ -1291,7 +1299,7 @@ class Main(QMainWindow):
                     path="browser_cli",
                     browser=plan.browser_name or "default",
                     open_target=plan.open_target,
-                    cmd=plan.command,
+                    cmd=sanitized_command,
                     error=str(exc),
                 )
                 logger.error(
