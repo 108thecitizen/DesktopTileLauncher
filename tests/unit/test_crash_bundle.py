@@ -13,7 +13,12 @@ from debug_scaffold import create_crash_bundle
 def test_create_crash_bundle(tmp_path) -> None:  # type: ignore[no-untyped-def]
     log_dir = tmp_path
     (log_dir / "debug.log").write_text("log")
-    context = {"foo": "bar"}
+    raw_url = "https://user:pass@example.test/path?token=sample-token#frag-value"
+    context = {
+        "foo": "bar",
+        "last_launch_command": f"firefox --new-tab {raw_url}",
+        "breadcrumbs": [{"event": "launch_plan", "command": ["firefox", raw_url]}],
+    }
     bundle = create_crash_bundle(log_dir, context)
     assert bundle.exists()  # nosec B101
 
@@ -25,3 +30,9 @@ def test_create_crash_bundle(tmp_path) -> None:  # type: ignore[no-untyped-def]
 
         crash_data = json.loads(zf.read("crash.json").decode("utf-8"))
         assert crash_data["foo"] == "bar"  # nosec B101
+        crash_text = json.dumps(crash_data)
+        assert raw_url not in crash_text  # nosec B101
+        assert "sample-token" not in crash_text  # nosec B101
+        assert "user:pass@" not in crash_text  # nosec B101
+        assert "frag-value" not in crash_text  # nosec B101
+        assert "REDACTED" in crash_text  # nosec B101
