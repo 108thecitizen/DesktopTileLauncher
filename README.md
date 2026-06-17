@@ -80,7 +80,7 @@ Review/Approval for release signing: 108thecitizen
 External pull requests are reviewed before merge; only tagged builds from `main` are submitted for release signing.
 
 **Privacy**  
-DesktopTileLauncher does not transfer information to other systems unless explicitly initiated by the user (opening a tile URL). See [Debugging & Crash Reports](#debugging--crash-reports) for local log locations. We do not collect telemetry. (Network access is solely the browser you launch.) 
+DesktopTileLauncher does not collect telemetry. Network access is limited to user-initiated actions: opening a tile URL in your browser, and adding or editing a URL tile may fetch a site icon through Google's favicon service. That favicon lookup may make a third-party network request and may send the tile's domain/host to the favicon service. See [Debugging & Crash Reports](#debugging--crash-reports) for local log locations.
 
 **Uninstall**  
 Delete the application folder. Optionally remove per‑user logs/config in the directories listed in the README.
@@ -163,10 +163,11 @@ directory:
 * **Linux:** `$XDG_STATE_HOME/DesktopTileLauncher/` or
   `~/.local/state/DesktopTileLauncher/`
 
-The application never sends data over the network.  When something goes wrong,
-use the *Create Crash Bundle* button on the crash dialog to zip the log files
-and a `crash.json` snapshot of runtime context.  Attach this bundle when filing
-a GitHub issue.
+Aside from user-initiated URL opens and optional favicon lookups described
+above, the application does not send logs or crash data over the network. When
+something goes wrong, use the *Create Crash Bundle* button on the crash dialog
+to zip the log files and a `crash.json` snapshot of runtime context. Attach this
+bundle when filing a GitHub issue.
 
 ## Running unit tests offline (Codex / air‑gapped)
 
