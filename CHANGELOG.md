@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.5 - Unreleased
+## v0.3.5 - 2026-06-17
 
 ### Security/Privacy
 - Redact launch URLs from diagnostics so local logs do not expose the sites opened from tiles.
