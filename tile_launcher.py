@@ -2,7 +2,7 @@
 # Minimal desktop launcher: tile grid that opens URLs in the default browser.
 # Windows/Mac/Linux.  Requires: Python 3.10+  pip install PySide6
 # encoding changed
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
 
