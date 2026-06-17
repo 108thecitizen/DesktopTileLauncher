@@ -576,6 +576,10 @@ def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
 
 
 class TabVisibilityDialog(QDialog):
+    _AVAILABLE_AREA_MARGIN = 48
+    _FALLBACK_MAX_INITIAL_HEIGHT = 640
+    _MIN_INITIAL_HEIGHT = 260
+
     def __init__(
         self,
         tabs: list[str],
@@ -584,22 +588,62 @@ class TabVisibilityDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Manage Tab Visibility")
+        self.setSizeGripEnabled(True)
         layout = QVBoxLayout(self)
         self._boxes: list[tuple[str, QCheckBox]] = []
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        list_widget = QWidget(scroll)
+        list_layout = QVBoxLayout(list_widget)
         for tab in tabs:
             cb = QCheckBox(tab)
             cb.setChecked(tab not in hidden)
-            layout.addWidget(cb)
+            list_layout.addWidget(cb)
             self._boxes.append((tab, cb))
+        scroll.setWidget(list_widget)
+        layout.addWidget(scroll, 1)
+
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            self,
         )
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if save_button is not None:
+            save_button.setText("Save")
+            save_button.setDefault(True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._cap_initial_size_to_available_area()
 
     def result_hidden(self) -> list[str]:
         return [tab for tab, cb in self._boxes if not cb.isChecked()]
+
+    def _cap_initial_size_to_available_area(self) -> None:
+        screen = None
+        parent = self.parentWidget()
+        if parent is not None:
+            parent_window = parent.window().windowHandle()
+            if parent_window is not None:
+                screen = parent_window.screen()
+        if screen is None:
+            own_window = self.windowHandle()
+            if own_window is not None:
+                screen = own_window.screen()
+        if screen is None:
+            screen = QApplication.primaryScreen()
+
+        max_height = self._FALLBACK_MAX_INITIAL_HEIGHT
+        if screen is not None:
+            available = screen.availableGeometry()
+            max_height = max(
+                self._MIN_INITIAL_HEIGHT,
+                available.height() - self._AVAILABLE_AREA_MARGIN,
+            )
+
+        hint = self.sizeHint()
+        self.resize(hint.width(), min(hint.height(), max_height))
 
 
 class TileButton(QToolButton):
