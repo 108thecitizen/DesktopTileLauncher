@@ -47,6 +47,8 @@ jobs:
         run: make install-dev
       - name: Ruff (lint)
         run: make lint
+      - name: Ruff (tests lint)
+        run: make lint_tests
       - name: Ruff (format check)
         run: make format-check
       - name: Type-check (mypy)

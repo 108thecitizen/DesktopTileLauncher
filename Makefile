@@ -38,6 +38,10 @@ install-dev: venv ## Bootstrap dev environment without failing when offline
 lint: install-dev ## Run ruff checks
 	$(PY) -m ruff check .
 
+.PHONY: lint_tests
+lint_tests: install-dev ## Run ruff checks over tests
+	$(PY) -m ruff check tests
+
 format: install-dev ## Format with ruff
 	$(PY) -m ruff format .
 
@@ -121,5 +125,4 @@ reassemble_wheels:
 # One-liner that mirrors the Codex task: reassemble + force offline install + run tests
 test_unit_offline: reassemble_wheels
 	@PIP_NO_INDEX=1 PIP_FIND_LINKS="vendor/wheelhouse-linux" $(MAKE) ONLINE=1 test_unit
-
 
