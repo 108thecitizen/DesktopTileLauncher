@@ -70,7 +70,7 @@ try:
     _xdg.chmod(0o700)
 except Exception:
     pass
-os.environ.setdefault("XDG_RUNTIME_DIR", str(_xdg))
+os.environ["XDG_RUNTIME_DIR"] = str(_xdg)
 
 # ---------- Preserve your original sys.path tweak ----------
 ROOT = str(ROOT_PATH)
