@@ -11,7 +11,8 @@ This repository uses AI‑assisted code generation. This document binds any code
 
 - You **do not** have GUI, libGL, Wayland/X11, browsers, Docker, GPUs, or external network access.  
 - Do **not** install system packages or attempt to verify system packages (e.g., **do not run** `python -m pip show PySide6`).  
-- If a task appears to require PySide6/Qt, libGL, or any external service, **stop after the PLAN** (see Output Contract) and explain what a human/CI must run. Do not attempt workarounds.
+- You may make static, reviewable edits to Qt/PySide6 source or test files when the change can be implemented responsibly through source inspection alone, without importing or executing PySide6/Qt.
+- If a task cannot be completed responsibly without importing or executing PySide6/Qt, observing GUI behavior, using libGL/display services, or calling any external service, **stop after the PLAN** (see Output Contract) and explain what a human/CI must run. Do not attempt workarounds.
 
 > Rationale: commands like `pytest -q -k "multi_window or tray or lazy_refresh"` will fail in headless environments (e.g., `ImportError: libGL.so.1`), and `PySide6` may not be installed. These are outside the agent’s capabilities.
 
@@ -19,7 +20,7 @@ This repository uses AI‑assisted code generation. This document binds any code
 
 ## 1) Definition of Done (Quality Gates — all must pass)
 
-**These exact commands must exit with code 0. No `|| true`, no skipping, no downgrading severities.**
+**These exact commands must exit with code 0. No `|| true`, no bypassing, no downgrading severities. A gate only counts as passing when it was actually run and exited 0.**
 
 ```bash
 # Formatting and linting (entire repo and explicitly the tests/ tree)
@@ -35,6 +36,8 @@ pytest -q -m "unit and not (integration or e2e or slow or network or gui or qt o
 ```
 
 These gates intentionally duplicate Ruff linting over the whole repo and over `tests/` to guarantee `tests/**/*.py` are included, independent of configuration.
+
+If a constrained environment cannot safely run a required gate, report that gate as **NOT RUN**, explain why, and identify whether the operator, Git Bash, CI, or a human GUI-capable reviewer must run it. Never represent an unexecuted gate as passing; the gate remains required before merge.
 
 ---
 
@@ -56,6 +59,7 @@ pytest -q   -m "unit and not (integration or e2e or slow or network or gui or qt
 - Never run targeted GUI/Qt/libGL tests by name.  
 - If you add tests, place unit tests in `tests/unit/` and mark them `@pytest.mark.unit`.  
 - If you must edit non‑unit tests (e.g., under `tests/integration/`), **do not** execute them; rely on CI/humans.
+- Static edits to Qt/PySide6 tests are allowed only when they can be reviewed from source without importing or executing Qt; any needed Qt/GUI validation must be reported as **NOT RUN** and assigned to CI/humans.
 
 ---
 
@@ -105,16 +109,16 @@ Produce one message with the following fenced sections, in order:
 <Diffs for new/updated unit tests only (placed under tests/unit/).>
 
 ### EVIDENCE
-<Paste exact outputs for, in this order:
+<Paste exact commands actually run and their actual outputs/results. For required gates, report in this order:
   ruff format --check .
   ruff check .
   ruff check tests
   mypy .
   make test_unit
-Show pytest collected/selected counts and marker filtering; confirm no GUI/Qt/GL tests executed.>
+For each required command not run, write NOT RUN, explain why it was not safe or available to run, and identify who must run it before merge. Show pytest collected/selected counts and marker filtering when make test_unit is run; confirm no GUI/Qt/GL tests executed. Never claim an unexecuted check passed.>
 
 ### RISKS
-<Potential regressions + why integration/GUI tests were not run; what CI/humans should verify.>
+<Potential regressions + why integration/GUI tests were not run; remaining Git Bash, CI, or human GUI validation needed.>
 
 ### NOTES
 <Docs/config updates needed; any stub packages added; rationale for any narrow ignores.>
