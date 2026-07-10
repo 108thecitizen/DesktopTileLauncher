@@ -80,7 +80,7 @@ Review/Approval for release signing: 108thecitizen
 External pull requests are reviewed before merge; only tagged builds from `main` are submitted for release signing.
 
 **Privacy**  
-DesktopTileLauncher does not collect telemetry. Network access is limited to user-initiated actions: opening a tile URL in your browser, and adding or editing a URL tile may fetch a site icon through Google's favicon service. That favicon lookup may make a third-party network request and may send the tile's domain/host to the favicon service. See [Debugging & Crash Reports](#debugging--crash-reports) for local log locations.
+DesktopTileLauncher does not collect telemetry. Network access is limited to user-initiated actions: opening a tile URL in your browser, adding or editing a URL tile may fetch a site icon through Google's favicon service, and completing URL entry while adding a new tile may make a best-effort request to that destination page to suggest the static page title. The title lookup contacts the destination directly, requests only the top-level document, follows normal redirects, uses the response only when it is HTML/XHTML, executes no JavaScript, loads no subresources, sends no browser cookies or saved credentials, and fails silently. Full URLs, query strings, retrieved titles, and page content are not written to diagnostics. The favicon lookup may make a third-party network request and may send the tile's domain/host to the favicon service. See [Debugging & Crash Reports](#debugging--crash-reports) for local log locations.
 
 **Uninstall**  
 Delete the application folder. Optionally remove per‑user logs/config in the directories listed in the README.
@@ -164,10 +164,15 @@ directory:
   `~/.local/state/DesktopTileLauncher/`
 
 Aside from user-initiated URL opens and optional favicon lookups described
-above, the application does not send logs or crash data over the network. When
-something goes wrong, use the *Create Crash Bundle* button on the crash dialog
-to zip the log files and a `crash.json` snapshot of runtime context. Attach this
-bundle when filing a GitHub issue.
+above, adding a URL tile may contact the destination page directly to suggest a
+static page title. That lookup requests only the top-level document, follows
+normal redirects, uses the response only when it is HTML/XHTML, executes no
+JavaScript, loads no subresources, sends no browser cookies or saved
+credentials, fails silently, and does not write full URLs, query strings,
+retrieved titles, or page content to diagnostics. The application does not send
+logs or crash data over the network. When something goes wrong, use the *Create
+Crash Bundle* button on the crash dialog to zip the log files and a `crash.json`
+snapshot of runtime context. Attach this bundle when filing a GitHub issue.
 
 ## Running unit tests offline (Codex / air‑gapped)
 

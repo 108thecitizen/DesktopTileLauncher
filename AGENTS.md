@@ -295,8 +295,8 @@ check_untyped_defs = False
    - Keep file names stable: `DesktopTileLauncher-<version>.exe`.
 
 5) **Network & telemetry discipline.**  
-   - No background telemetry. The only network request in the app is the optional favicon fetch for a user‑entered site; keep it that way (best‑effort, silent on failure).  
-   - Do **not** add auto‑update, beaconing, or process‑injection logic.
+   - No background telemetry. Aside from user‑initiated browser launches, application‑initiated network requests are limited to the optional favicon fetch and best‑effort destination-page title lookup; keep both lookup paths silent on failure.
+   - Do **not** add auto‑update, beaconing, credentialed requests, background crawling, telemetry, or process‑injection logic.
 
 6) **Process launching is explicit and narrow.**  
    - Use `subprocess` with `shell=False`; commands must come from narrow, internal allow‑lists (browser binaries/flags).  
@@ -355,7 +355,7 @@ check_untyped_defs = False
 
 > **Cross‑checks:**  
 > • Persistence path is user‑scope (`APPDATA` on Windows); keep it.  
-> • Optional favicon fetch and read‑only Chrome detection are acceptable and already present; do not broaden them.
+> • Optional favicon fetch, narrow destination-page title lookup, and read‑only Chrome detection are acceptable and already present; do not broaden them.
 
 ---
 
