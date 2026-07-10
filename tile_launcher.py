@@ -1192,7 +1192,6 @@ class Main(QMainWindow):
         sanitized_command = sanitize_launch_command(plan.command)
         record_breadcrumb(
             "launch_attempt",
-            name=tile.name,
             url=url,
             browser=plan.browser_name or "default",
             open_target=plan.open_target,
@@ -1499,7 +1498,6 @@ class Main(QMainWindow):
             self._set_current_tab_by_name(cast(str, data["tab"]))
             record_breadcrumb(
                 "tile_add",
-                name=cast(str, data["name"]),
                 url=sanitize_url(cast(str, data["url"])),
                 tab=cast(str, data["tab"]),
             )

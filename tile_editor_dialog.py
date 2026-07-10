@@ -9,7 +9,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -34,6 +34,13 @@ from browser_chrome_win import (
     is_windows_default_browser_chrome,
     list_chrome_profiles,
 )
+from page_title_lookup import (
+    LookupRequest,
+    TitleSuggestionController,
+    fetch_page_title,
+)
+
+TitleFetcher = Callable[[str], str | None]
 
 
 def _normalize_url(raw: str) -> str:
@@ -42,6 +49,32 @@ def _normalize_url(raw: str) -> str:
         return ""
     parsed = urllib.parse.urlparse(s)
     return s if parsed.scheme else f"https://{s}"
+
+
+class _TitleLookupSignals(QObject):
+    finished = Signal(int, object)
+
+
+class _TitleLookupRunnable(QRunnable):
+    def __init__(
+        self,
+        request: LookupRequest,
+        fetch_title: TitleFetcher,
+        signals: _TitleLookupSignals,
+    ) -> None:
+        super().__init__()
+        self.generation = request.generation
+        self._url = request.url
+        self._fetch_title = fetch_title
+        self.signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            title = self._fetch_title(self._url)
+        except Exception:
+            title = None
+        self.signals.finished.emit(self.generation, title)
 
 
 class TileEditorDialog(QDialog):
@@ -54,6 +87,7 @@ class TileEditorDialog(QDialog):
         browsers: list[str],
         icon_dir: Path,
         fetch_favicon: Callable[[str], Path | None],
+        fetch_title: TitleFetcher = fetch_page_title,
         tile: "Tile | None" = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -61,7 +95,10 @@ class TileEditorDialog(QDialog):
         self.setWindowTitle("Tile")
         self.icon_dir = icon_dir
         self.fetch_favicon = fetch_favicon
+        self.fetch_title = fetch_title
         self._icon_path: str | None = getattr(tile, "icon", None) if tile else None
+        self._title_suggestion = TitleSuggestionController(is_add_dialog=tile is None)
+        self._title_lookup_signals: dict[int, _TitleLookupSignals] = {}
         self.data: dict[str, str | None] | None = None
 
         layout = QVBoxLayout(self)
@@ -145,7 +182,10 @@ class TileEditorDialog(QDialog):
         self._update_ok()
 
         self.name_edit.textChanged.connect(self._update_ok)  # type: ignore[arg-type]
+        self.name_edit.textEdited.connect(self._on_name_edited)  # type: ignore[arg-type]
         self.url_edit.textChanged.connect(self._update_ok)  # type: ignore[arg-type]
+        self.url_edit.textChanged.connect(self._on_url_changed)  # type: ignore[arg-type]
+        self.url_edit.editingFinished.connect(self._on_url_editing_finished)
         self.browser_combo.currentIndexChanged.connect(
             self._refresh_chrome_profile_visibility
         )
@@ -190,6 +230,37 @@ class TileEditorDialog(QDialog):
             self._icon_path = str(result)
             self._update_icon_preview()
 
+    def _on_name_edited(self, _text: str) -> None:
+        self._title_suggestion.name_edited()
+
+    def _on_url_changed(self, _text: str) -> None:
+        decision = self._title_suggestion.url_changed(self.name_edit.text())
+        if decision.clear_name:
+            self.name_edit.clear()
+
+    def _on_url_editing_finished(self) -> None:
+        request = self._title_suggestion.begin_lookup(self.url_edit.text())
+        if request is None:
+            return
+        signals = _TitleLookupSignals()
+        signals.finished.connect(
+            self._on_title_lookup_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._title_lookup_signals[request.generation] = signals
+        runnable = _TitleLookupRunnable(request, self.fetch_title, signals)
+        QThreadPool.globalInstance().start(runnable)
+
+    @Slot(int, object)
+    def _on_title_lookup_finished(self, generation: int, title: object) -> None:
+        self._title_lookup_signals.pop(generation, None)
+        result = title if isinstance(title, str) else None
+        decision = self._title_suggestion.apply_result(
+            generation, result, self.name_edit.text()
+        )
+        if decision.title is not None:
+            self.name_edit.setText(decision.title)
+
     def _is_effective_browser_chrome(self) -> bool:
         """Return True if the dialog's browser selection resolves to Chrome."""
         sel = self.browser_combo.currentText()
@@ -204,6 +275,10 @@ class TileEditorDialog(QDialog):
         is_chrome = self._is_effective_browser_chrome()
         self.chromeProfileLabel.setVisible(is_chrome)
         self.chromeProfileCombo.setVisible(is_chrome)
+
+    def done(self, result: int) -> None:  # noqa: D401
+        self._title_suggestion.deactivate()
+        super().done(result)
 
     def accept(self) -> None:  # noqa: D401
         name = self.name_edit.text().strip()
