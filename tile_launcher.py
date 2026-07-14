@@ -77,6 +77,14 @@ from debug_scaffold import (
     sanitize_url,
 )
 from tile_editor_dialog import TileEditorDialog
+from tab_order import (
+    TabOrderState,
+    add_tab as add_tab_to_order,
+    delete_tab as delete_tab_from_order,
+    move_visible_tab,
+    normalize_tab_order,
+    rename_tab as rename_tab_in_order,
+)
 from browser_chrome_win import (
     is_windows_default_browser_chrome,
     is_chrome_path,
@@ -261,6 +269,8 @@ class LauncherConfig:
     tiles: list["Tile"] = field(default_factory=list)
     tabs: list[str] = field(default_factory=lambda: ["Main"])
     hidden_tabs: list[str] = field(default_factory=list)
+    tab_ids: dict[str, str] = field(default_factory=dict)
+    tab_order: list[str] = field(default_factory=list)
     auto_fit: bool = True
     window_x: Optional[int] = None
     window_y: Optional[int] = None
@@ -294,7 +304,11 @@ class LauncherConfig:
                 window_w=data.get("window_w"),
                 window_h=data.get("window_h"),
             )
-            enforce_tab_invariants(cfg)
+            enforce_tab_invariants(
+                cfg,
+                raw_tab_ids=data.get("tab_ids"),
+                raw_tab_order=data.get("tab_order"),
+            )
             return cfg
         # first run – create a friendly default
         cfg = LauncherConfig(
@@ -313,7 +327,8 @@ class LauncherConfig:
         cfg.save()
         return cfg
 
-    def save(self):
+    def save(self) -> None:
+        enforce_tab_invariants(self)
         tiles = []
         for t in self.tiles:
             d = asdict(t)
@@ -326,6 +341,8 @@ class LauncherConfig:
             "tiles": tiles,
             "tabs": self.tabs,
             "hidden_tabs": self.hidden_tabs,
+            "tab_ids": self.tab_ids,
+            "tab_order": self.tab_order,
             "auto_fit": self.auto_fit,
             "window_x": self.window_x,
             "window_y": self.window_y,
@@ -335,10 +352,30 @@ class LauncherConfig:
         CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def enforce_tab_invariants(cfg: LauncherConfig) -> None:
+def _tab_order_state(cfg: LauncherConfig) -> TabOrderState:
+    return TabOrderState(
+        tabs=list(cfg.tabs),
+        tab_ids=dict(cfg.tab_ids),
+        tab_order=list(cfg.tab_order),
+    )
+
+
+def _apply_tab_order_state(cfg: LauncherConfig, state: TabOrderState) -> None:
+    cfg.tabs = state.tabs
+    cfg.tab_ids = state.tab_ids
+    cfg.tab_order = state.tab_order
+
+
+def enforce_tab_invariants(
+    cfg: LauncherConfig,
+    *,
+    raw_tab_ids: object | None = None,
+    raw_tab_order: object | None = None,
+) -> None:
     """Ensure tab-related invariants for a configuration.
 
     - ``cfg.tabs`` is a de-duplicated, non-empty list of strings.
+    - Each tab has one stable ID in a canonical full-tab order.
     - ``cfg.hidden_tabs`` is a subset of ``cfg.tabs`` and does not hide all tabs.
     - Every tile's ``tab`` exists in ``cfg.tabs``; invalid entries are remapped to
       the first tab.
@@ -350,7 +387,13 @@ def enforce_tab_invariants(cfg: LauncherConfig) -> None:
             clean_tabs.append(t)
     if not clean_tabs:
         clean_tabs = ["Main"]
-    cfg.tabs = clean_tabs
+
+    state = normalize_tab_order(
+        clean_tabs,
+        cfg.tab_ids if raw_tab_ids is None else raw_tab_ids,
+        cfg.tab_order if raw_tab_order is None else raw_tab_order,
+    )
+    _apply_tab_order_state(cfg, state)
 
     first_tab = cfg.tabs[0]
     valid_tabs = set(cfg.tabs)
@@ -905,6 +948,8 @@ class Main(QMainWindow):
         debug_menu.addAction("Qt Warning", lambda: qWarning("test"))
 
         self.tabs_widget = QTabWidget()
+        self.tabs_widget.setMovable(True)
+        self.tabs_widget.tabBar().tabMoved.connect(self._on_tab_moved)
         self.tabs_widget.currentChanged.connect(
             lambda _=0: QTimer.singleShot(
                 0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit)
@@ -932,6 +977,30 @@ class Main(QMainWindow):
 
     def _enforce_tab_invariants(self) -> None:
         enforce_tab_invariants(self.cfg)
+
+    def _on_tab_moved(self, from_index: int, to_index: int) -> None:
+        tab_bar = self.tabs_widget.tabBar()
+        visible_ids_after = [tab_bar.tabData(index) for index in range(tab_bar.count())]
+        hidden_ids = [self.cfg.tab_ids.get(title) for title in self.cfg.hidden_tabs]
+        updated_order = move_visible_tab(
+            self.cfg.tab_order,
+            hidden_ids,
+            from_index,
+            to_index,
+            visible_ids_after,
+        )
+        if updated_order == self.cfg.tab_order:
+            return
+
+        state = normalize_tab_order(
+            self.cfg.tabs,
+            self.cfg.tab_ids,
+            updated_order,
+        )
+        if state.tab_ids != self.cfg.tab_ids or state.tab_order != updated_order:
+            return
+        _apply_tab_order_state(self.cfg, state)
+        self.cfg.save()
 
     def _set_current_tab_by_name(self, name: str) -> None:
         vis = self._visible_tabs()
@@ -967,6 +1036,7 @@ class Main(QMainWindow):
         self.tabs_widget.clear()
         self._grids: dict[str, QGridLayout] = {}
         self._tab_viewports.clear()
+        tab_bar = self.tabs_widget.tabBar()
         for tab in self._visible_tabs():
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -976,7 +1046,8 @@ class Main(QMainWindow):
             grid.setContentsMargins(16, 16, 16, 16)
             scroll.setWidget(container)
             self._wire_tab_whitespace_menu(scroll)
-            self.tabs_widget.addTab(scroll, tab)
+            tab_index = self.tabs_widget.addTab(scroll, tab)
+            tab_bar.setTabData(tab_index, self.cfg.tab_ids[tab])
             self._grids[tab] = grid
             self._populate_tab(tab)
         QTimer.singleShot(
@@ -1561,7 +1632,8 @@ class Main(QMainWindow):
                 self, "Tab exists", "A tab with that name exists already."
             )
             return
-        self.cfg.tabs.append(name)
+        state = add_tab_to_order(_tab_order_state(self.cfg), name)
+        _apply_tab_order_state(self.cfg, state)
         self._enforce_tab_invariants()
         self.cfg.save()
         self.rebuild()
@@ -1578,8 +1650,8 @@ class Main(QMainWindow):
                 self, "Tab exists", "A tab with that name exists already."
             )
             return
-        idx = self.cfg.tabs.index(current)
-        self.cfg.tabs[idx] = name
+        state = rename_tab_in_order(_tab_order_state(self.cfg), current, name)
+        _apply_tab_order_state(self.cfg, state)
         for t in self.cfg.tiles:
             if t.tab == current:
                 t.tab = name
@@ -1608,7 +1680,8 @@ class Main(QMainWindow):
         )
         if ok != QMessageBox.StandardButton.Yes:
             return
-        self.cfg.tabs = [t for t in self.cfg.tabs if t != current]
+        state = delete_tab_from_order(_tab_order_state(self.cfg), current)
+        _apply_tab_order_state(self.cfg, state)
         self.cfg.tiles = [t for t in self.cfg.tiles if t.tab != current]
         self.cfg.hidden_tabs = [t for t in self.cfg.hidden_tabs if t != current]
         self._enforce_tab_invariants()
