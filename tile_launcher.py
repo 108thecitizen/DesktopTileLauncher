@@ -70,6 +70,7 @@ from PySide6.QtWidgets import (
 )
 
 import debug_scaffold
+from config_persistence import atomic_write_text
 from debug_scaffold import (
     record_breadcrumb,
     sanitize_launch_command,
@@ -349,7 +350,8 @@ class LauncherConfig:
             "window_w": self.window_w,
             "window_h": self.window_h,
         }
-        CFG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        payload = json.dumps(data, indent=2)
+        atomic_write_text(CFG_PATH, payload)
 
 
 def _tab_order_state(cfg: LauncherConfig) -> TabOrderState:
