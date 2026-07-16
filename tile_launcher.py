@@ -78,6 +78,7 @@ from debug_scaffold import (
     sanitize_url,
 )
 from tile_editor_dialog import TileEditorDialog
+from url_import_dialog import ImportDestination, UrlImportDialog
 from tab_order import (
     TabOrderState,
     add_tab as add_tab_to_order,
@@ -410,6 +411,20 @@ def enforce_tab_invariants(
     cfg.hidden_tabs = clean_hidden
     if len(cfg.hidden_tabs) >= len(cfg.tabs):
         cfg.hidden_tabs = [t for t in cfg.hidden_tabs if t != first_tab]
+
+
+def _config_with_imported_tiles(
+    cfg: LauncherConfig, imported_tiles: Iterable[Tile]
+) -> LauncherConfig:
+    """Return a detached configuration with imported tiles appended in order."""
+    return replace(
+        cfg,
+        tiles=[replace(tile) for tile in cfg.tiles] + list(imported_tiles),
+        tabs=list(cfg.tabs),
+        hidden_tabs=list(cfg.hidden_tabs),
+        tab_ids=dict(cfg.tab_ids),
+        tab_order=list(cfg.tab_order),
+    )
 
 
 @dataclass
@@ -928,6 +943,9 @@ class Main(QMainWindow):
         add_action = QAction("➕ Add", self)
         add_action.triggered.connect(self.add_tile)
         self.toolbar.addAction(add_action)
+        import_action = QAction("Import URLs…", self)
+        import_action.triggered.connect(lambda: self.import_urls())
+        self.toolbar.addAction(import_action)
 
         tab_menu = self.menuBar().addMenu("Tabs")
         tab_menu.addAction("Add Tab", self.add_tab)
@@ -1136,6 +1154,8 @@ class Main(QMainWindow):
         menu = QMenu(self)
         act = menu.addAction("Add Tile…")
         act.triggered.connect(lambda: self.add_tile(self.current_tab()))
+        import_action = menu.addAction("Import URLs…")
+        import_action.triggered.connect(lambda: self.import_urls(self.current_tab()))
         menu.exec(global_pos)
 
     def moveEvent(self, event: QMoveEvent) -> None:  # noqa: D401
@@ -1574,6 +1594,73 @@ class Main(QMainWindow):
                 url=sanitize_url(cast(str, data["url"])),
                 tab=cast(str, data["tab"]),
             )
+
+    def import_urls(self, default_tab: str | None = None) -> None:
+        previous_visible_tab = self.current_tab()
+        destinations = tuple(
+            ImportDestination(
+                name=tab,
+                urls=tuple(tile.url for tile in self.cfg.tiles if tile.tab == tab),
+                hidden=tab in self.cfg.hidden_tabs,
+            )
+            for tab in self.cfg.tabs
+        )
+        dialog = UrlImportDialog(
+            destinations=destinations,
+            default_destination=default_tab or self.current_tab(),
+            parent=self,
+        )
+
+        while dialog.exec() == QDialog.DialogCode.Accepted:
+            destination = dialog.selected_destination()
+            selections = tuple(
+                sorted(dialog.selected_imports(), key=lambda item: item.source_line)
+            )
+            if destination not in self.cfg.tabs or not selections:
+                return
+
+            imported_tiles = [
+                Tile(
+                    name=selection.name,
+                    url=selection.url,
+                    tab=destination,
+                    icon=None,
+                    bg="#F5F6FA",
+                    browser=None,
+                    chrome_profile=None,
+                    open_target="tab",
+                )
+                for selection in selections
+            ]
+            candidate = _config_with_imported_tiles(self.cfg, imported_tiles)
+            try:
+                candidate.save()
+            except OSError as exc:
+                record_breadcrumb(
+                    "url_import_save_failed",
+                    imported_count=len(imported_tiles),
+                    error_type=type(exc).__name__,
+                )
+                QMessageBox.critical(
+                    self,
+                    "Import URLs",
+                    "Could not save the imported tiles. No tiles were imported.",
+                )
+                continue
+
+            self.cfg = candidate
+            self.rebuild()
+            destination_hidden = destination in self.cfg.hidden_tabs
+            if not destination_hidden:
+                self._set_current_tab_by_name(destination)
+            else:
+                self._set_current_tab_by_name(previous_visible_tab)
+            record_breadcrumb(
+                "url_import_complete",
+                imported_count=len(imported_tiles),
+                destination_hidden=destination_hidden,
+            )
+            return
 
     def edit_tile(self, tile: Tile) -> None:
         dlg = TileEditorDialog(
