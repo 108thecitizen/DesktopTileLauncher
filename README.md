@@ -117,6 +117,26 @@ SPDX-License-Identifier: Apache-2.0
 - Use the **Add** button on the toolbar.
 - Right-click whitespace within a tab and choose **Add Tile…**.
 
+### Import URL lists
+
+Choose **Import URLs…** on the toolbar or from a tab's whitespace menu to add
+several tiles at once. Paste one URL per line, or load a UTF-8 text file, select
+the destination tab, and choose **Review URLs**. The preview keeps every nonblank
+source row visible so you can edit tile names and decide whether to include valid
+duplicates. Invalid rows cannot be selected. Ready URLs are selected by default;
+duplicates already in the destination or earlier in the batch are not.
+
+The import review is entirely offline: it does not visit the URLs, retrieve page
+titles or favicons, or send telemetry. Names are derived locally from the URL
+path or host, and the existing generated letter icon is displayed without a
+favicon lookup. Imported tiles use the default browser and open in a new tab.
+Tiles are appended in source order. Hidden destination tabs are labeled in the
+selector and remain hidden after import.
+The launcher saves the complete batch atomically; if saving fails, no tiles are
+added and the reviewed list remains available for another attempt. Import accepts
+HTTP and HTTPS URLs only and limits a review to 500 nonblank rows and 1 MiB of
+UTF-8 text.
+
 On Windows, selecting Google Chrome for a tile (or leaving the browser as
 Default when Chrome is the system default) reveals a **Chrome profile**
 dropdown. The list is populated from Chrome's local profile cache and includes
@@ -169,7 +189,9 @@ static page title. That lookup requests only the top-level document, follows
 normal redirects, uses the response only when it is HTML/XHTML, executes no
 JavaScript, loads no subresources, sends no browser cookies or saved
 credentials, fails silently, and does not write full URLs, query strings,
-retrieved titles, or page content to diagnostics. The application does not send
+retrieved titles, or page content to diagnostics. Bulk URL import performs none
+of these lookups and records only aggregate, categorical diagnostics—not URLs,
+tile names, pasted input, or source file paths. The application does not send
 logs or crash data over the network. When something goes wrong, use the *Create
 Crash Bundle* button on the crash dialog to zip the log files and a `crash.json`
 snapshot of runtime context. Attach this bundle when filing a GitHub issue.
