@@ -34,15 +34,16 @@ This ADR defines the target contract. It does not change the runtime schema or b
 3. Workspace, Tab, Resource, Placement, DeviceBinding, and ImportBatch use immutable,
    canonical UUID strings.
 4. A Resource owns the underlying target, managed content, intrinsic metadata, and default
-   label and icon. A Placement owns tab membership, workflow status, participation in its
-   Tab's canonical order, color, and optional label and icon overrides. A Placement without
-   an override inherits the corresponding Resource default.
+   label and icon. A Placement owns tab membership, workflow status, its positions in the
+   Tab's Display and Kanban orders, color, and optional label and icon overrides. A
+   Placement without an override inherits the corresponding Resource default.
 5. Tab visibility and tab lifecycle are independent. The UI derives the simple categories
    Visible, Hidden, and Archived from those values. Archiving preserves visibility and
    restoring returns the tab to that prior visible/hidden state. Tile workflow status is
    separate from all tab state.
-6. Each tab has one canonical placement order. Display filters and Kanban columns are stable
-   projections of that order.
+6. Each Tab has an independent Display order and per-status Kanban column orders. Reordering
+   one does not change the other. Ordered exports use Display order initially; version 1 has
+   no separate export order.
 7. Discard removes only a Placement. It never deletes an original file or a managed copy.
 8. ImportBatch is a durable staging manifest outside the committed configuration. A batch
    commits one validated state replacement or makes no persistent state change.
@@ -166,7 +167,10 @@ Required fields:
 - `view_mode`: `display` or `kanban`.
 - `display_filter`: a duplicate-free subset of `new`, `in_use`, and `archived`, serialized
   in that enum order.
-- `placement_order`: complete canonical ordered list of Placement IDs in the Tab.
+- `display_order`: complete ordered list of every Placement ID in the Tab. Its sequence is
+  Display's row-major reading order: top-left is first and bottom-right is last.
+- `kanban_order`: object with `new`, `in_use`, and `archived` arrays. Each array is the
+  top-to-bottom order of Placements in that workflow-status column.
 - `extensions`: opaque extension map.
 
 Visibility and lifecycle are independent. The user-facing category is derived as follows:
@@ -245,10 +249,12 @@ Required fields:
 - `workflow_status`: `new`, `in_use`, or `archived`.
 - `extensions`: opaque extension map.
 
-The Tab's `placement_order`, not an independent rank field, is the source of order.
-Workflow status is placement-level so future placements of the same Resource in different
-tabs can be triaged independently. Color and label/icon overrides are also placement-level;
-editing one does not silently change another Placement or the Resource default.
+Order is Placement-level behavior but is serialized once in its owning Tab's
+`display_order` and `kanban_order` indexes rather than duplicated as rank fields on the
+Placement. Workflow status is placement-level so future Placements of the same Resource in
+different tabs can be triaged independently. Color and label/icon overrides are also
+placement-level; editing one does not silently change another Placement or the Resource
+default.
 
 The effective presentation is deterministic:
 
@@ -274,7 +280,11 @@ Invariants:
 
 - `resource_id` resolves to exactly one Resource.
 - `tab_id` resolves to exactly one Tab.
-- The Placement occurs exactly once in its Tab's `placement_order` and nowhere else.
+- The Placement occurs exactly once in its Tab's `display_order`.
+- For each Tab, the set of IDs in `display_order` equals exactly the set of Placements owned
+  by that Tab; foreign IDs and omissions are invalid.
+- The Placement occurs exactly once in the `kanban_order` array matching its
+  `workflow_status` and in no other Kanban array.
 - A Resource may have zero or more Placements. M2 import creates exactly one Placement per
   imported Resource; multi-placement UI remains deferred.
 
@@ -321,6 +331,8 @@ The manifest contains:
 M2 rules:
 
 - Input order is retained throughout staging and commit.
+- New Placements are appended to Display order and to their initial Kanban-status column in
+  source order. On a new import Tab, the two initial sequences therefore match.
 - One batch may use existing tabs plus at most one newly created tab.
 - Every committed item has exactly one destination.
 - Multiple new tabs and several Placements for one Resource are deferred.
@@ -336,27 +348,56 @@ M2 rules:
 
 ## Ordering contract
 
-Each Tab's `placement_order` is the only canonical order.
+Display arrangement and Kanban evaluation serve different workflows and therefore persist
+independent orders.
 
-- Display mode is the stable subsequence whose Placement status is selected by the Tab's
-  `display_filter`.
-- Kanban columns are stable subsequences for `new`, `in_use`, and `archived`.
-- Reordering within one Kanban column changes the relative positions of that column's
-  Placements in `placement_order` while preserving the relative order of every other
-  Placement.
-- Moving between columns changes `workflow_status` and inserts the Placement at the chosen
-  destination-column position using the same stable-subsequence rule.
-- Changing a Display filter or mode never changes canonical order.
-- Playlist/export features consume the visible Display subsequence in canonical order unless
-  their later contract explicitly requests another scope.
+### Display order
 
-This single-order model avoids two independently editable orders that can contradict each
-other. If later usability evidence requires independent column ranks, that is a new schema
-decision.
+- Display mode is the stable subsequence of `display_order` whose Placement status is
+  selected by the Tab's `display_filter`.
+- Responsive reflow changes the number of complete tile columns, not sequence. Reading
+  row-major from top-left to bottom-right always yields `display_order` for the displayed
+  set.
+- Reordering in Display changes only `display_order`; it never changes a Kanban column.
+- When a filter hides Placements, reordering replaces only the displayed-ID slots in
+  `display_order`. Filtered-out IDs remain in their existing slots, making the merge back
+  into the complete order deterministic.
+- Changing a Display filter or view mode never changes either persisted order.
+
+### Kanban order
+
+- Each `kanban_order` array is an independent top-to-bottom evaluation queue for one status.
+- Reordering within a Kanban column changes only that column's array. It does not change
+  `display_order` or either other Kanban column.
+- Moving a Placement between columns changes `workflow_status`, removes its ID from the old
+  array, and inserts it at the chosen position in the destination array. `display_order`
+  remains unchanged.
+- Moving a Placement to the bottom of New to defer evaluation is therefore a Kanban-only
+  operation; its familiar Display position is preserved.
+- Example: if New is `[A, B, C, ...]`, deferring the current item A produces
+  `[B, C, ..., A]` in `kanban_order.new`; A's position in `display_order` does not change.
+- A cross-tab move removes the Placement from both source-Tab indexes, changes `tab_id`, and
+  inserts it at separately supplied Display and matching Kanban positions in the destination
+  Tab. The interaction must provide or deliberately apply defaults for both positions.
+- Drag/drop supplies an explicit destination position. The default destination for a
+  non-positional status command remains a later interaction decision, not a third order.
+
+### Export order
+
+- Version 1 stores no independent export order.
+- Any future export first determines its included Placement set under that export's own
+  scope rules. Within each Tab, it sorts that Tab's included set by `display_order`.
+- Thus, within a Tab, the included tile nearest the Display's top-left exports first and the
+  included tile nearest the bottom-right exports last, regardless of current Kanban order.
+- Cross-Tab sequencing is not selected by RD-08; it remains deferred with export scope and
+  may later use Workspace `tab_order` or an explicit user-selected Tab sequence.
+- A future compelling export workflow may introduce an explicit export order through a
+  reviewed schema decision; it is not preemptively added here.
 
 ## Discard, deletion, and managed assets
 
-- Discard deletes only the selected Placement and removes its ID from `placement_order`.
+- Discard deletes only the selected Placement and removes its ID from `display_order` and
+  from the `kanban_order` array matching its status.
 - Discard never deletes an original source, a Resource, a managed photo, a Resource-default
   icon, or a Placement-override icon.
 - A Resource with no Placements becomes an orphan eligible for a later cleanup workflow.
@@ -383,7 +424,7 @@ Migration from the current format to version 1 follows this mapping.
 | `hidden_tabs` | Tab `visibility`; all Tab lifecycles become `active` |
 | each legacy Tile | one distinct URL Resource and one Placement; no URL deduplication during migration |
 | Tile `tab` title | resolved Placement `tab_id` |
-| Tile list position | per-tab `placement_order` |
+| Tile list position | per-tab `display_order` and `kanban_order.in_use`, in the same preserved order |
 | Tile `name` | Resource `default_label`; Placement `label_override: null` |
 | Tile `icon` | Resource `default_icon`; Placement `icon_override: null` |
 | Tile `bg` | Placement `background_color` |
@@ -401,6 +442,8 @@ Additional rules:
   and icon into Resource defaults while leaving Placement overrides null preserves the
   current appearance exactly and does not introduce sharing between formerly independent
   tiles.
+- Existing Tiles initialize both Display order and the In Use Kanban column from the same
+  preserved per-tab legacy order; New and Archived Kanban arrays start empty.
 - Every current tab, hidden state, stable order, tile, icon reference, background color,
   browser/profile preference, open target, window value, and extension is accounted for.
 - Invalid references are repaired only by the current documented invariants: tile-only tab
@@ -454,11 +497,15 @@ A version 1 candidate is valid only when:
 - Exactly one application default Workspace exists and resolves.
 - Every Tab has one Workspace owner and appears once in that Workspace's `tab_order`.
 - Every Placement has one Tab owner, one Resource, and appears once in that Tab's
-  `placement_order`.
+  `display_order`.
+- For each Tab, `display_order` is duplicate-free and its ID set equals exactly the set of
+  Placements whose `tab_id` names that Tab.
+- The three `kanban_order` arrays are duplicate-free and disjoint; their union is exactly
+  the Tab's Placement set, and each Placement occurs in the array matching its status.
 - All collection members are reachable or are explicitly permitted orphan Resources.
 - Managed paths are normalized relative paths contained by the DTL-managed root; traversal,
   absolute paths, links escaping the root, and device paths are invalid.
-- Display filters and orders are duplicate-free.
+- Display filters and Display/Kanban orders are duplicate-free.
 - DeviceBinding uniqueness and subject rules hold.
 - Extension values are valid JSON and their namespace keys are valid.
 
@@ -473,11 +520,11 @@ loading.
 - Q5: introduce the default Workspace and stable Workspace/Tab identity migration while
   preserving existing valid Tab IDs and behavior.
 - Later Resource/Placement slice: introduce typed targets, placement ownership, status, and
-  canonical placement order.
+  independent Display/Kanban orders.
 - Later image/import slices: add managed assets, DeviceBindings, ImportBatch staging, and the
   M2 routing limits.
-- Later Kanban slice: implement the projection and reorder rules without introducing a second
-  source of order.
+- Later Kanban slice: implement independent column queues and their status-transition rules
+  without changing Display order.
 
 No implementation issue may silently change this contract. A material change requires a
 superseding ADR or an explicit amendment reviewed before the dependent code merges.
@@ -489,7 +536,10 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
 - Mutable titles and paths stop serving as identity.
 - Existing stable Tab IDs are preserved instead of replaced.
 - Shared resources and per-tab workflow state have an unambiguous ownership boundary.
-- One canonical order supports Display, Kanban, and future ordered export.
+- Independent Display and Kanban orders support familiar launch layouts and deliberate
+  review queues without one workflow rearranging the other.
+- Export order remains predictable by reusing Display's row-major sequence until a distinct
+  export workflow is justified.
 - Managed copies can be handled without endangering originals.
 - Recovery and migration failures cannot silently destroy the last good configuration.
 - Platform-specific launch data has a defined seam without requiring synchronization now.
@@ -500,6 +550,8 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
 - Strict validation requires complete characterization tests and explicit migrations.
 - Deterministic legacy IDs require canonicalization rules to remain stable.
 - Durable staging needs careful crash cleanup and privacy-safe manifests.
+- Two persisted order indexes require strict membership/status validation and regression
+  tests for every reorder, filter, import, status-change, and Discard path.
 - Resource defaults plus Placement overrides require editing UI to distinguish intentional
   Resource-wide default changes from Placement-local overrides.
 
@@ -515,8 +567,12 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
   refreshable Resource defaults should be shared while allowing explicit local overrides.
 - Put status on Resource: rejected because one resource can be New in one tab and In Use in
   another.
-- Keep separate Display and Kanban orders: rejected because the orders can contradict each
-  other and ordered export would be ambiguous.
+- Use one canonical order for Display and Kanban: rejected because familiar launch placement
+  and evaluation-queue order serve different user workflows and must change independently.
+- Store Display as fixed grid coordinates: rejected because a row-major linear sequence
+  reflows predictably across window widths without changing user order.
+- Add a third independent export order now: rejected because no compelling separate export
+  workflow exists; Display order supplies a predictable initial sequence.
 - Delete an unreferenced managed copy during Discard: rejected because Discard must be safe,
   predictable, and recoverable.
 - Store absolute paths in portable Resource state: rejected because they leak local details and
@@ -534,6 +590,12 @@ This ADR intentionally does not decide:
 - Multi-window session ownership, tab tear-off, compact palettes, or always-on-top behavior.
 - Document/application target schemas beyond the initial URL and image contract.
 - Long-term import history, undo, or automatic orphan cleanup.
+- A separate export order and the default insertion position for non-positional Kanban status
+  commands.
+- Export inclusion and cross-Tab sequencing scope, including selection, active filters,
+  statuses, hidden/archived Tabs, grouping, Workspace `tab_order`, explicit Tab selection,
+  and provider-specific eligibility. Within each included Tab, items retain Display-relative
+  order.
 - Browser, Notes, Obsidian, playlist, mobile, store, and transfer-specific integrations.
 
 ## Review checklist
@@ -545,7 +607,8 @@ This ADR intentionally does not decide:
 - [ ] Existing stable Tab IDs and every current user-visible field are preserved.
 - [ ] Visible, Hidden, Archived, Archive, and Restore follow the approved derived-category
   and prior-visibility rules.
-- [ ] Display/Kanban ordering is deterministic.
+- [ ] Independent Display/Kanban ordering, status transitions, migration, and Display-derived
+  export order follow the approved rules.
 - [ ] Original, managed copy, Resource, and Placement lifecycles are distinct.
 - [ ] Import commit/cancel/partial-failure rules match the confirmed M2 limits.
 - [ ] Q3, Q4, Q5, and later implementation slices can be issued independently.
