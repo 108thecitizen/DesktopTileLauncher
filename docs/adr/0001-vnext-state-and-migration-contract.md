@@ -33,8 +33,10 @@ This ADR defines the target contract. It does not change the runtime schema or b
    transient import staging.
 3. Workspace, Tab, Resource, Placement, DeviceBinding, and ImportBatch use immutable,
    canonical UUID strings.
-4. A Resource owns target identity and managed content. A Placement owns its presentation,
-   tab membership, workflow status, and order.
+4. A Resource owns the underlying target, managed content, intrinsic metadata, and default
+   label and icon. A Placement owns tab membership, workflow status, participation in its
+   Tab's canonical order, color, and optional label and icon overrides. A Placement without
+   an override inherits the corresponding Resource default.
 5. Tab visibility and tab lifecycle are independent. The UI derives the simple categories
    Visible, Hidden, and Archived from those values. Archiving preserves visibility and
    restoring returns the tab to that prior visible/hidden state. Tile workflow status is
@@ -202,12 +204,25 @@ Required fields:
   image targets contain a managed-asset reference relative to the DTL data root.
 - `managed_asset`: null or metadata containing a relative path, media type, byte size, and
   SHA-256 digest. Absolute managed paths are forbidden.
+- `intrinsic_metadata`: validated kind-specific facts derived from the underlying target or
+  managed content, such as media type, dimensions, orientation, or fetched page metadata.
+  It is not per-tab presentation state.
+- `default_label`: the Resource-owned display label inherited by Placements that do not
+  provide a label override.
+- `default_icon`: the Resource-owned managed icon reference, thumbnail reference, or null,
+  inherited by Placements that do not provide an icon override.
 - `provenance`: bounded, privacy-reviewed metadata about creation/import. Original local
   paths are not portable Resource fields.
 - `extensions`: opaque extension map.
 
-Resource fields do not include tab membership, workflow status, order, display filtering,
-browser profile, or window-launch preference.
+Resource fields do not include tab membership, workflow status, order, placement color,
+label/icon overrides, display filtering, browser profile, or window-launch preference.
+
+Metadata refresh operates once per Resource even when several selected Placements refer to
+it. It updates intrinsic metadata and may update Resource defaults after confirmation. The
+confirmation identifies how many inheriting Placements would change. Placements that inherit
+a changed default then display the new value; explicit Placement overrides are not rewritten.
+The metadata and confirmed default changes for one Resource are applied atomically.
 
 For M2, each imported photo is copied into DTL-managed storage. The original is left
 untouched. The managed copy is the Resource target. An optional original-source reference
@@ -222,17 +237,38 @@ Required fields:
 - `id`: immutable UUID.
 - `resource_id`: referenced Resource ID.
 - `tab_id`: owning Tab ID.
-- `label`: placement-level display name.
-- `icon`: placement-level managed icon reference or null.
+- `label_override`: placement-level display name or null. Null means inherit the Resource
+  `default_label`.
+- `icon_override`: placement-level managed icon reference or null. Null means inherit the
+  Resource `default_icon`.
 - `background_color`: placement-level color.
 - `workflow_status`: `new`, `in_use`, or `archived`.
 - `extensions`: opaque extension map.
 
 The Tab's `placement_order`, not an independent rank field, is the source of order.
 Workflow status is placement-level so future placements of the same Resource in different
-tabs can be triaged independently. Label, icon, and color are also placement-level; editing
-one placement does not silently change another. Resource metadata refresh may propose
-placement updates but does not redefine ownership.
+tabs can be triaged independently. Color and label/icon overrides are also placement-level;
+editing one does not silently change another Placement or the Resource default.
+
+The effective presentation is deterministic:
+
+- Effective label is `label_override` when non-null; otherwise it is Resource
+  `default_label`.
+- Effective icon is `icon_override` when non-null; otherwise it is Resource `default_icon`.
+- A future Reset to Resource Default action clears the corresponding override instead of
+  copying the current default into it.
+
+Changing a Resource default intentionally affects every Placement that inherits that
+default, while explicit overrides survive. Image thumbnails and other intrinsic metadata
+remain Resource-owned even when a Placement overrides its displayed label or icon.
+Normal label/icon editing on a tile changes its Placement override; changing a shared
+Resource default requires an explicitly resource-wide action.
+
+The `icon_override` field and any presentation asset created only for that override are
+Placement-owned. Override assets live in managed presentation storage, distinct from the
+Resource's managed target content. Replacing or clearing an override, or discarding its
+Placement, only makes an unreferenced override asset eligible for the separate cleanup
+workflow; it does not delete the asset implicitly.
 
 Invariants:
 
@@ -251,16 +287,16 @@ Required fields:
 
 - `id`: immutable UUID.
 - `device_key`: opaque per-installation key; it is not a hardware serial number.
-- `subject_kind`: `workspace` or `placement`.
-- `subject_id`: matching Workspace or Placement ID.
+- `subject_kind`: `workspace`, `resource`, or `placement`.
+- `subject_id`: matching Workspace, Resource, or Placement ID.
 - `binding_kind`: initially `window` or `launch`.
 - `settings`: validated binding-specific object.
 - `extensions`: opaque extension map.
 
 A Workspace/window binding may contain window geometry and auto-fit presentation state. A
-Placement/launch binding may contain browser selection, Chrome profile, open target, or a
-local original-source reference. Secrets, credentials, and raw device identifiers are
-forbidden.
+Placement/launch binding may contain browser selection, Chrome profile, or open target. A
+Resource/local-origin binding may contain an original-source reference used for provenance
+or relinking. Secrets, credentials, and raw device identifiers are forbidden.
 
 There may be at most one binding for a `(device_key, subject_kind, subject_id,
 binding_kind)` tuple. Missing bindings use platform defaults. Cross-device synchronization
@@ -321,7 +357,8 @@ decision.
 ## Discard, deletion, and managed assets
 
 - Discard deletes only the selected Placement and removes its ID from `placement_order`.
-- Discard never deletes an original source, a Resource, a managed photo, or a managed icon.
+- Discard never deletes an original source, a Resource, a managed photo, a Resource-default
+  icon, or a Placement-override icon.
 - A Resource with no Placements becomes an orphan eligible for a later cleanup workflow.
 - Normal launch, archive, hide, and Discard actions never run orphan cleanup implicitly.
 - Managed-copy cleanup must be separate, reference-aware, unmistakably confirmed, and
@@ -347,7 +384,9 @@ Migration from the current format to version 1 follows this mapping.
 | each legacy Tile | one distinct URL Resource and one Placement; no URL deduplication during migration |
 | Tile `tab` title | resolved Placement `tab_id` |
 | Tile list position | per-tab `placement_order` |
-| Tile `name`, `icon`, `bg` | Placement label, icon, and background color |
+| Tile `name` | Resource `default_label`; Placement `label_override: null` |
+| Tile `icon` | Resource `default_icon`; Placement `icon_override: null` |
+| Tile `bg` | Placement `background_color` |
 | Tile URL | Resource URL target |
 | Tile browser/profile/open target | local Placement/launch DeviceBinding |
 | existing tiles | Placement `workflow_status: in_use` |
@@ -358,6 +397,10 @@ Additional rules:
 - The source document is treated as immutable input.
 - Migration never deduplicates Resources, merges tabs, normalizes user-facing labels, drops
   tiles, or changes launch behavior.
+- Because migration creates one distinct Resource per legacy Tile, moving each legacy name
+  and icon into Resource defaults while leaving Placement overrides null preserves the
+  current appearance exactly and does not introduce sharing between formerly independent
+  tiles.
 - Every current tab, hidden state, stable order, tile, icon reference, background color,
   browser/profile preference, open target, window value, and extension is accounted for.
 - Invalid references are repaired only by the current documented invariants: tile-only tab
@@ -457,7 +500,8 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
 - Strict validation requires complete characterization tests and explicit migrations.
 - Deterministic legacy IDs require canonicalization rules to remain stable.
 - Durable staging needs careful crash cleanup and privacy-safe manifests.
-- Separating Resource and Placement makes some future edits intentionally placement-local.
+- Resource defaults plus Placement overrides require editing UI to distinguish intentional
+  Resource-wide default changes from Placement-local overrides.
 
 ## Alternatives rejected
 
@@ -465,6 +509,10 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
   migration order, ownership, and compatibility remain ambiguous.
 - Treat every tile as a fully independent resource forever: rejected because multi-placement,
   managed assets, synchronization, and safe cleanup need shared identity.
+- Put label, icon, and color entirely on Resource: rejected because tab-specific color and
+  presentation overrides must remain independent across Placements.
+- Put label, icon, and color entirely on Placement: rejected because intrinsic metadata and
+  refreshable Resource defaults should be shared while allowing explicit local overrides.
 - Put status on Resource: rejected because one resource can be New in one tab and In Use in
   another.
 - Keep separate Display and Kanban orders: rejected because the orders can contradict each
@@ -492,6 +540,8 @@ This ADR intentionally does not decide:
 
 - [ ] Version 0 and version 1 boundaries are unambiguous.
 - [ ] Entity identity, ownership, references, and deletion rules are complete.
+- [ ] Resource defaults, Placement overrides, inheritance, refresh, and legacy presentation
+  migration follow the approved ownership rules.
 - [ ] Existing stable Tab IDs and every current user-visible field are preserved.
 - [ ] Visible, Hidden, Archived, Archive, and Restore follow the approved derived-category
   and prior-visibility rules.
