@@ -8,28 +8,32 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import shutil
 import subprocess  # nosec B404: used to launch local apps; inputs validated & shell=False
 import sys
-import math
-import webbrowser
+import threading
 import urllib.parse
-import urllib.request
+import webbrowser
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
+from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, Literal, Optional, cast
-from enum import Enum, auto
-import shutil
 
 from PySide6.QtCore import (
     QEvent,
-    QObject,
     QMimeData,
+    QObject,
     QPoint,
+    QRunnable,
     QSize,
     Qt,
+    QThreadPool,
     QTimer,
+    Signal,
+    Slot,
     qWarning,
 )
 from PySide6.QtGui import (
@@ -57,6 +61,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QGridLayout,
     QInputDialog,
+    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -76,6 +81,20 @@ from debug_scaffold import (
     sanitize_launch_command,
     sanitize_log_extra,
     sanitize_url,
+)
+from tile_metadata_refresh import (
+    OpaqueToken,
+    OperationGuard,
+    RefreshResult,
+    TileSnapshot,
+    create_batch_staging_directory,
+    fetch_favicon as fetch_favicon_to_directory,
+    guess_domain as metadata_guess_domain,
+    merge_refresh_result,
+    run_metadata_refresh,
+    select_all_for_active_tab,
+    snapshot_matches,
+    summarize_refresh_results,
 )
 from tile_editor_dialog import TileEditorDialog
 from url_import_dialog import ImportDestination, UrlImportDialog
@@ -590,26 +609,16 @@ def _auto_fit_columns(n_tiles: int, current_cols: int) -> int:
 
 
 def guess_domain(url: str) -> str:
-    try:
-        netloc = urllib.parse.urlparse(url).netloc
-        return netloc.split("@")[-1]  # strip creds if any
-    except Exception:  # nosec B110
-        return ""
+    return metadata_guess_domain(url)
 
 
 def fetch_favicon(url: str, size: int = 128) -> Optional[Path]:
     """Try to save a favicon PNG using Google's s2 service."""
-    domain = guess_domain(url)
-    if not domain:
-        return None
-    out = ICON_DIR / f"{domain}_{size}.png"
-    try:
-        src = f"https://www.google.com/s2/favicons?domain={domain}&sz={size}"
-        with urllib.request.urlopen(src, timeout=5) as r, open(out, "wb") as f:  # nosec B310
-            f.write(r.read())
-        return out
-    except Exception:  # nosec B110
-        return None
+    return fetch_favicon_to_directory(
+        url,
+        output_directory=ICON_DIR,
+        size=size,
+    )
 
 
 def letter_icon(text: str, size: int = 92, bg: str = "#F5F6FA") -> QIcon:
@@ -718,8 +727,15 @@ class TileButton(QToolButton):
         on_move: Callable[[int, int], None],
         on_change_tab: Callable[[Tile, str], None],
         tabs: list[str],
+        *,
+        selection_token: OpaqueToken | None = None,
+        selected: bool = False,
+        on_toggle_selection: Callable[[OpaqueToken, Tile], None] | None = None,
     ) -> None:
         super().__init__()
+        selection_mode = selection_token is not None
+        if selection_mode and on_toggle_selection is None:
+            raise ValueError("Selection-mode tiles require a selection callback.")
         self.tile = tile
         self.index = index
         self.on_open = on_open
@@ -729,20 +745,26 @@ class TileButton(QToolButton):
         self.on_move = on_move
         self.on_change_tab = on_change_tab
         self.tabs = tabs
+        self.selection_token = selection_token
+        self.on_toggle_selection = on_toggle_selection
+        self.selection_mode = selection_mode
         self._drag_start_pos: QPoint | None = None
 
-        self.setText(tile.name)
+        self.setCheckable(selection_mode)
+        self.setChecked(selection_mode and selected)
+        self._update_selection_presentation()
         self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
         self.setIcon(self._icon_for_tile())
         self.setIconSize(QSize(72, 72))
         self.setFixedSize(150, 140)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAcceptDrops(True)
+        self.setAcceptDrops(not selection_mode)
         self._apply_style()
 
         self.clicked.connect(self._handle_click)
 
-    def _apply_style(self):
+    def _apply_style(self) -> None:
         self.setStyleSheet(f"""
         QToolButton {{
             background: {self.tile.bg};
@@ -756,17 +778,59 @@ class TileButton(QToolButton):
         QToolButton:pressed {{
             background: #ECEEF6;
         }}
+        QToolButton:checked {{
+            background: #DCEBFF;
+            border: 4px solid #0B57D0;
+            padding-top: 7px;
+        }}
+        QToolButton:checked:hover,
+        QToolButton:checked:pressed {{
+            background: #DCEBFF;
+            border-color: #0B57D0;
+        }}
+        QToolButton:focus,
+        QToolButton:focus:hover,
+        QToolButton:focus:pressed,
+        QToolButton:checked:focus,
+        QToolButton:checked:focus:hover,
+        QToolButton:checked:focus:pressed {{
+            border: 4px dashed #111827;
+            padding-top: 7px;
+        }}
         """)
+
+    def _update_selection_presentation(self) -> None:
+        if not self.selection_mode:
+            self.setText(self.tile.name)
+            self.setAccessibleName(self.tile.name)
+            self.setAccessibleDescription("Open this tile.")
+            return
+        selected = self.isChecked()
+        self.setText(f"✓ {self.tile.name}" if selected else self.tile.name)
+        state = "selected" if selected else "not selected"
+        self.setAccessibleName(f"{self.tile.name}, {state}")
+        self.setAccessibleDescription("Toggle this tile's selection.")
 
     def _icon_for_tile(self) -> QIcon:
         if self.tile.icon and Path(self.tile.icon).exists():
             return QIcon(self.tile.icon)
         return letter_icon(self.tile.name, 92, self.tile.bg)
 
-    def _handle_click(self):
+    def _handle_click(self, _checked: bool = False) -> None:
+        if self.selection_mode:
+            token = self.selection_token
+            callback = self.on_toggle_selection
+            if token is None or callback is None:
+                return
+            callback(token, self.tile)
+            self._update_selection_presentation()
+            return
         self.on_open(self.tile)
 
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802
+        if self.selection_mode:
+            event.accept()
+            return
         m = QMenu(self)
         m.addAction("Open", lambda: self.on_open(self.tile))
         m.addSeparator()
@@ -780,11 +844,19 @@ class TileButton(QToolButton):
         m.exec(event.globalPos())
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self.selection_mode:
+            self._drag_start_pos = None
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.position().toPoint()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self.selection_mode:
+            self._drag_start_pos = None
+            super().mouseMoveEvent(event)
+            return
         if self._drag_start_pos is None:
             super().mouseMoveEvent(event)
             return
@@ -800,10 +872,16 @@ class TileButton(QToolButton):
         self._drag_start_pos = None
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if self.selection_mode:
+            event.ignore()
+            return
         if event.mimeData().hasText():
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        if self.selection_mode:
+            event.ignore()
+            return
         if event.mimeData().hasText():
             from_idx = int(event.mimeData().text())
             self.on_move(from_idx, self.index)
@@ -876,6 +954,155 @@ def _tile_uses_chrome(tile: Tile) -> bool:
     return is_windows_default_browser_chrome()
 
 
+_REFRESH_STAGING_PREFIX = "refresh-"
+
+
+def _owned_refresh_directory(path: Path) -> Path | None:
+    """Return a validated, directly managed refresh directory."""
+    try:
+        icon_directory = ICON_DIR.resolve()
+        candidate = path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    if candidate.parent != icon_directory or not candidate.name.startswith(
+        _REFRESH_STAGING_PREFIX
+    ):
+        return None
+    return candidate
+
+
+def _remove_refresh_directory(path: Path) -> bool:
+    """Remove only a validated batch directory beneath managed icon storage."""
+    candidate = _owned_refresh_directory(path)
+    if candidate is None:
+        return False
+    try:
+        if candidate.exists():
+            shutil.rmtree(candidate)
+        return not candidate.exists()
+    except OSError:
+        return False
+
+
+def _resolved_staged_icon(batch_directory: Path, icon_path: Path) -> Path | None:
+    batch = _owned_refresh_directory(batch_directory)
+    if batch is None or icon_path.is_symlink():
+        return None
+    try:
+        icon = icon_path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not icon.is_file() or batch not in icon.parents:
+        return None
+    return icon
+
+
+def _prune_refresh_directory(
+    batch_directory: Path,
+    retained_icons: Iterable[Path],
+) -> bool:
+    """Keep only referenced regular files in one quiescent refresh batch."""
+    batch = _owned_refresh_directory(batch_directory)
+    if batch is None or not batch.is_dir():
+        return False
+
+    retained: set[Path] = set()
+    retained_directories: set[Path] = set()
+    for icon_path in retained_icons:
+        icon = _resolved_staged_icon(batch, icon_path)
+        if icon is None:
+            return False
+        retained.add(icon)
+        parent = icon.parent
+        while parent != batch:
+            retained_directories.add(parent)
+            parent = parent.parent
+
+    try:
+        entries = sorted(
+            batch.rglob("*"),
+            key=lambda entry: len(entry.parts),
+            reverse=True,
+        )
+        for entry in entries:
+            if entry.is_symlink():
+                entry.unlink()
+            elif entry.is_file():
+                if entry.resolve() not in retained:
+                    entry.unlink()
+            elif entry.is_dir() and entry.resolve() not in retained_directories:
+                entry.rmdir()
+            elif not entry.is_dir():
+                return False
+
+        if not retained:
+            batch.rmdir()
+            return not batch.exists()
+
+        for entry in batch.rglob("*"):
+            if entry.is_symlink():
+                return False
+            if entry.is_file() and entry.resolve() not in retained:
+                return False
+            if not entry.is_file() and not entry.is_dir():
+                return False
+        return all(icon.is_file() for icon in retained)
+    except (OSError, RuntimeError):
+        return False
+
+
+class _MetadataRefreshSignals(QObject):
+    finished = Signal(object, object, object)
+
+
+class _MetadataRefreshRunnable(QRunnable):
+    def __init__(
+        self,
+        operation_token: OpaqueToken,
+        snapshots: tuple[TileSnapshot, ...],
+        batch_directory: Path,
+        cancellation: threading.Event,
+        signals: _MetadataRefreshSignals,
+    ) -> None:
+        super().__init__()
+        self.setAutoDelete(True)
+        self._operation_token = operation_token
+        self._snapshots = snapshots
+        self._batch_directory = batch_directory
+        self._cancellation = cancellation
+        self._signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        results: tuple[RefreshResult, ...] | None = None
+        error_type: str | None = None
+        try:
+            results = run_metadata_refresh(
+                self._snapshots,
+                output_directory=self._batch_directory,
+                cancellation=self._cancellation,
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__ or "Exception"
+        finally:
+            self._signals.finished.emit(
+                self._operation_token,
+                results,
+                error_type,
+            )
+
+
+@dataclass(frozen=True)
+class _ActiveRefresh:
+    token: OpaqueToken
+    tab_id: str = field(repr=False)
+    tab_name: str = field(repr=False)
+    snapshots: tuple[TileSnapshot, ...] = field(repr=False)
+    tiles_by_token: dict[OpaqueToken, Tile] = field(repr=False)
+    batch_directory: Path = field(repr=False)
+    cancellation: threading.Event = field(repr=False)
+
+
 class Main(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -883,6 +1110,27 @@ class Main(QMainWindow):
         self._enforce_tab_invariants()
         self.cfg.save()
         self._fit_guard = False
+        self._rebuilding = False
+        self._closing = False
+        self._close_ready = False
+        self._operation_guard = OperationGuard()
+        self._active_refresh: _ActiveRefresh | None = None
+        self._metadata_refresh_pool = QThreadPool(self)
+        self._metadata_refresh_pool.setMaxThreadCount(1)
+        self._metadata_refresh_signals = _MetadataRefreshSignals(self)
+        self._metadata_refresh_signals.finished.connect(
+            self._on_metadata_refresh_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._metadata_close_poll = QTimer(self)
+        self._metadata_close_poll.setSingleShot(True)
+        self._metadata_close_poll.setInterval(25)
+        self._metadata_close_poll.timeout.connect(self._poll_metadata_refresh_close)
+        self._selection_tab_id: str | None = None
+        self._selection_tab_name: str | None = None
+        self._selection_tiles: dict[OpaqueToken, Tile] = {}
+        self._selection_tokens_by_identity: dict[int, OpaqueToken] = {}
+        self._selected_tokens: set[OpaqueToken] = set()
 
         # -------- Startup auto-fit: materialize columns on config when enabled --------
         if self.cfg.auto_fit:
@@ -940,21 +1188,64 @@ class Main(QMainWindow):
         # toolbar and menus
         self.toolbar = QToolBar()
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
-        add_action = QAction("➕ Add", self)
-        add_action.triggered.connect(self.add_tile)
-        self.toolbar.addAction(add_action)
-        import_action = QAction("Import URLs…", self)
-        import_action.triggered.connect(lambda: self.import_urls())
-        self.toolbar.addAction(import_action)
+        self.add_action = QAction("➕ Add", self)
+        self.add_action.triggered.connect(self.add_tile)
+        self.toolbar.addAction(self.add_action)
+        self.import_action = QAction("Import URLs…", self)
+        self.import_action.triggered.connect(lambda: self.import_urls())
+        self.toolbar.addAction(self.import_action)
+        self.select_tiles_action = QAction("Select tiles", self)
+        self.select_tiles_action.triggered.connect(self.enter_selection_mode)
+        self.toolbar.addAction(self.select_tiles_action)
+
+        self.selection_count_label = QLabel("0 selected", self)
+        self.selection_count_label.setAccessibleName("Selected tile count")
+        self.selection_count_label.setContentsMargins(8, 0, 8, 0)
+        self.selection_count_action = self.toolbar.addWidget(self.selection_count_label)
+        self.select_all_action = QAction("Select all", self)
+        self.select_all_action.triggered.connect(self.select_all_tiles)
+        self.toolbar.addAction(self.select_all_action)
+        self.clear_selection_action = QAction("Clear selection", self)
+        self.clear_selection_action.triggered.connect(self.clear_tile_selection)
+        self.toolbar.addAction(self.clear_selection_action)
+        self.refresh_metadata_action = QAction("Refresh names and icons", self)
+        self.refresh_metadata_action.triggered.connect(self.refresh_selected_metadata)
+        self.toolbar.addAction(self.refresh_metadata_action)
+        self.done_selection_action = QAction("Done", self)
+        self.done_selection_action.triggered.connect(self.exit_selection_mode)
+        self.toolbar.addAction(self.done_selection_action)
+        self._selection_toolbar_actions = (
+            self.selection_count_action,
+            self.select_all_action,
+            self.clear_selection_action,
+            self.refresh_metadata_action,
+            self.done_selection_action,
+        )
+        for action in self._selection_toolbar_actions:
+            action.setVisible(False)
 
         tab_menu = self.menuBar().addMenu("Tabs")
-        tab_menu.addAction("Add Tab", self.add_tab)
-        tab_menu.addAction("Rename Tab", self.rename_tab)
-        tab_menu.addAction("Delete Tab", self.delete_tab)
+        self.add_tab_action = QAction("Add Tab", self)
+        self.add_tab_action.triggered.connect(self.add_tab)
+        tab_menu.addAction(self.add_tab_action)
+        self.rename_tab_action = QAction("Rename Tab", self)
+        self.rename_tab_action.triggered.connect(self.rename_tab)
+        tab_menu.addAction(self.rename_tab_action)
+        self.delete_tab_action = QAction("Delete Tab", self)
+        self.delete_tab_action.triggered.connect(self.delete_tab)
+        tab_menu.addAction(self.delete_tab_action)
         self.toggle_tab_action = QAction(self)
         self.toggle_tab_action.triggered.connect(self.toggle_current_tab_visibility)
         tab_menu.addAction(self.toggle_tab_action)
-        tab_menu.addAction("Manage Tab Visibility…", self.manage_tab_visibility)
+        self.manage_tab_visibility_action = QAction("Manage Tab Visibility…", self)
+        self.manage_tab_visibility_action.triggered.connect(self.manage_tab_visibility)
+        tab_menu.addAction(self.manage_tab_visibility_action)
+        self._tab_mutation_actions = (
+            self.add_tab_action,
+            self.rename_tab_action,
+            self.delete_tab_action,
+            self.manage_tab_visibility_action,
+        )
 
         view_menu = self.menuBar().addMenu("View")
         self.auto_fit_action = QAction("Auto-fit Tiles to Display", self)
@@ -970,14 +1261,7 @@ class Main(QMainWindow):
         self.tabs_widget = QTabWidget()
         self.tabs_widget.setMovable(True)
         self.tabs_widget.tabBar().tabMoved.connect(self._on_tab_moved)
-        self.tabs_widget.currentChanged.connect(
-            lambda _=0: QTimer.singleShot(
-                0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit)
-            )
-        )
-        self.tabs_widget.currentChanged.connect(
-            lambda _: self._update_toggle_tab_action()
-        )
+        self.tabs_widget.currentChanged.connect(self._on_current_tab_changed)
         self.setCentralWidget(self.tabs_widget)
 
         self._tab_viewports: set[QWidget] = set()
@@ -998,7 +1282,559 @@ class Main(QMainWindow):
     def _enforce_tab_invariants(self) -> None:
         enforce_tab_invariants(self.cfg)
 
+    def _selection_active(self) -> bool:
+        return self._selection_tab_id is not None
+
+    def _tab_id_at(self, index: int) -> str | None:
+        if index < 0:
+            return None
+        raw_id = self.tabs_widget.tabBar().tabData(index)
+        return raw_id if isinstance(raw_id, str) else None
+
+    def _on_current_tab_changed(self, index: int) -> None:
+        if self._rebuilding:
+            return
+        if (
+            self._selection_active()
+            and self._tab_id_at(index) != self._selection_tab_id
+        ):
+            self._exit_selection_mode(repopulate=True)
+        self._update_toggle_tab_action()
+        self._update_selection_controls()
+        QTimer.singleShot(
+            0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit)
+        )
+
+    def enter_selection_mode(self) -> None:
+        if self._selection_active() or self._active_refresh is not None:
+            return
+        tab_name = self.current_tab()
+        tab_id = self._tab_id_at(self.tabs_widget.currentIndex())
+        if tab_id is None:
+            return
+
+        self._selection_tab_id = tab_id
+        self._selection_tab_name = tab_name
+        self._selection_tiles = {}
+        self._selection_tokens_by_identity = {}
+        for tile in self.cfg.tiles:
+            if tile.tab != tab_name:
+                continue
+            identity = id(tile)
+            if identity in self._selection_tokens_by_identity:
+                continue
+            token = OpaqueToken()
+            self._selection_tiles[token] = tile
+            self._selection_tokens_by_identity[identity] = token
+        self._selected_tokens.clear()
+        self._update_selection_controls()
+        if tab_name in self._grids:
+            self._populate_tab(tab_name)
+
+    def exit_selection_mode(self) -> None:
+        if self._active_refresh is not None:
+            return
+        self._exit_selection_mode(repopulate=True)
+
+    def _exit_selection_mode(self, *, repopulate: bool) -> None:
+        tab_name = self._selection_tab_name
+        self._selection_tab_id = None
+        self._selection_tab_name = None
+        self._selection_tiles.clear()
+        self._selection_tokens_by_identity.clear()
+        self._selected_tokens.clear()
+        self._update_selection_controls()
+        if repopulate and tab_name is not None and tab_name in self._grids:
+            self._populate_tab(tab_name)
+
+    def _selection_token_for_tile(self, tile: Tile) -> OpaqueToken | None:
+        token = self._selection_tokens_by_identity.get(id(tile))
+        if token is None or self._selection_tiles.get(token) is not tile:
+            return None
+        return token
+
+    def _toggle_tile_selection(self, token: OpaqueToken, tile: Tile) -> None:
+        if self._active_refresh is not None:
+            return
+        selection_tab = self._selection_tab_name
+        if (
+            not self._selection_active()
+            or selection_tab is None
+            or self._selection_tiles.get(token) is not tile
+            or tile.tab != selection_tab
+            or not any(candidate is tile for candidate in self.cfg.tiles)
+        ):
+            if selection_tab is not None and selection_tab in self._grids:
+                self._populate_tab(selection_tab)
+            return
+        if token in self._selected_tokens:
+            self._selected_tokens.remove(token)
+        else:
+            self._selected_tokens.add(token)
+        self._update_selection_controls()
+
+    @staticmethod
+    def _snapshot_tile(token: OpaqueToken, tile: Tile) -> TileSnapshot:
+        return TileSnapshot(
+            token=token,
+            url=tile.url,
+            name=tile.name,
+            tab=tile.tab,
+            icon=tile.icon,
+            bg=tile.bg,
+            browser=tile.browser,
+            chrome_profile=tile.chrome_profile,
+            open_target=tile.open_target,
+        )
+
+    def _selected_tile_snapshots(self) -> tuple[TileSnapshot, ...]:
+        return tuple(
+            self._snapshot_tile(token, tile)
+            for token, tile in self._selection_tiles.items()
+            if token in self._selected_tokens
+        )
+
+    def select_all_tiles(self) -> None:
+        if not self._selection_active() or self._active_refresh is not None:
+            return
+        tab_name = self._selection_tab_name
+        if tab_name is None:
+            return
+        snapshots = tuple(
+            self._snapshot_tile(token, tile)
+            for token, tile in self._selection_tiles.items()
+        )
+        self._selected_tokens = set(select_all_for_active_tab(snapshots, tab_name))
+        self._update_selection_controls()
+        if tab_name is not None and tab_name in self._grids:
+            self._populate_tab(tab_name)
+
+    def clear_tile_selection(self) -> None:
+        if not self._selection_active() or self._active_refresh is not None:
+            return
+        self._selected_tokens.clear()
+        self._update_selection_controls()
+        tab_name = self._selection_tab_name
+        if tab_name is not None and tab_name in self._grids:
+            self._populate_tab(tab_name)
+
+    def refresh_selected_metadata(self) -> None:
+        if (
+            self._closing
+            or not self._selection_active()
+            or self._active_refresh is not None
+            or self._metadata_refresh_pool.activeThreadCount() > 0
+        ):
+            return
+        confirmed_tokens = frozenset(self._selected_tokens)
+        selected_count = len(confirmed_tokens)
+        if selected_count == 0:
+            return
+
+        response = QMessageBox.warning(
+            self,
+            "Refresh names and icons?",
+            (
+                f"Refresh names and icons for {selected_count} selected "
+                f"{'tile' if selected_count == 1 else 'tiles'}?\n\n"
+                "Successful results replace the current name or icon, including "
+                "custom values. A failed lookup keeps that field unchanged."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        if (
+            self._closing
+            or not self._selection_active()
+            or self._active_refresh is not None
+            or self._metadata_refresh_pool.activeThreadCount() > 0
+            or self._selected_tokens != confirmed_tokens
+        ):
+            return
+
+        snapshots = self._selected_tile_snapshots()
+        tab_id = self._selection_tab_id
+        tab_name = self._selection_tab_name
+        if not snapshots or tab_id is None or tab_name is None:
+            return
+
+        operation_token = OpaqueToken()
+        if not self._operation_guard.start(operation_token):
+            return
+        try:
+            batch_directory = create_batch_staging_directory(ICON_DIR)
+        except OSError as exc:
+            self._operation_guard.finish(operation_token)
+            error_type = type(exc).__name__ or "OSError"
+            record_breadcrumb(
+                "metadata_refresh_failed",
+                selected_count=selected_count,
+                error_type=error_type,
+                cleanup_ok=True,
+            )
+            QMessageBox.warning(
+                self,
+                "Refresh failed",
+                "The refresh could not be started. No tiles were changed.",
+            )
+            return
+
+        cancellation = threading.Event()
+        runnable = _MetadataRefreshRunnable(
+            operation_token,
+            snapshots,
+            batch_directory,
+            cancellation,
+            self._metadata_refresh_signals,
+        )
+        operation = _ActiveRefresh(
+            token=operation_token,
+            tab_id=tab_id,
+            tab_name=tab_name,
+            snapshots=snapshots,
+            tiles_by_token={
+                snapshot.token: self._selection_tiles[snapshot.token]
+                for snapshot in snapshots
+            },
+            batch_directory=batch_directory,
+            cancellation=cancellation,
+        )
+        self._active_refresh = operation
+        self._update_selection_controls()
+        record_breadcrumb(
+            "metadata_refresh_started",
+            selected_count=selected_count,
+        )
+        try:
+            self._metadata_refresh_pool.start(runnable)
+        except RuntimeError as exc:
+            error_type = type(exc).__name__ or "RuntimeError"
+            cleanup_ok = _remove_refresh_directory(batch_directory)
+            self._operation_guard.finish(operation_token)
+            self._active_refresh = None
+            self._update_selection_controls()
+            record_breadcrumb(
+                "metadata_refresh_failed",
+                selected_count=selected_count,
+                error_type=error_type,
+                cleanup_ok=cleanup_ok,
+            )
+            QMessageBox.warning(
+                self,
+                "Refresh failed",
+                "The refresh could not be started. No tiles were changed.",
+            )
+
+    def _refresh_completion_matches(
+        self,
+        operation: _ActiveRefresh,
+        results: tuple[RefreshResult, ...],
+    ) -> bool:
+        if (
+            self._selection_tab_id != operation.tab_id
+            or self._selection_tab_name != operation.tab_name
+            or self._tab_id_at(self.tabs_widget.currentIndex()) != operation.tab_id
+            or len(results) != len(operation.snapshots)
+            or len(self._selected_tokens) != len(operation.snapshots)
+        ):
+            return False
+        if any(
+            result.token is not snapshot.token
+            for snapshot, result in zip(operation.snapshots, results, strict=True)
+        ):
+            return False
+        for snapshot in operation.snapshots:
+            tile = operation.tiles_by_token.get(snapshot.token)
+            if (
+                tile is None
+                or snapshot.token not in self._selected_tokens
+                or not any(candidate is tile for candidate in self.cfg.tiles)
+                or not snapshot_matches(
+                    snapshot,
+                    self._snapshot_tile(snapshot.token, tile),
+                )
+            ):
+                return False
+        return True
+
+    def _detached_configuration(self) -> tuple[LauncherConfig, dict[int, Tile]]:
+        tiles_by_identity: dict[int, Tile] = {}
+        detached_tiles: list[Tile] = []
+        for tile in self.cfg.tiles:
+            identity = id(tile)
+            detached = tiles_by_identity.get(identity)
+            if detached is None:
+                detached = replace(tile)
+                tiles_by_identity[identity] = detached
+            detached_tiles.append(detached)
+        return (
+            replace(
+                self.cfg,
+                tiles=detached_tiles,
+                tabs=list(self.cfg.tabs),
+                hidden_tabs=list(self.cfg.hidden_tabs),
+                tab_ids=dict(self.cfg.tab_ids),
+                tab_order=list(self.cfg.tab_order),
+            ),
+            tiles_by_identity,
+        )
+
+    def _retire_metadata_refresh(
+        self,
+        operation: _ActiveRefresh,
+        *,
+        remove_staging: bool,
+    ) -> bool:
+        cleanup_ok = True
+        if remove_staging:
+            cleanup_ok = _remove_refresh_directory(operation.batch_directory)
+        self._operation_guard.finish(operation.token)
+        if self._active_refresh is operation:
+            self._active_refresh = None
+        return cleanup_ok
+
+    def _schedule_metadata_refresh_close_poll(self) -> None:
+        if (
+            self._closing
+            and not self._close_ready
+            and not self._metadata_close_poll.isActive()
+        ):
+            self._metadata_close_poll.start()
+
+    @Slot()
+    def _poll_metadata_refresh_close(self) -> None:
+        if not self._closing or self._close_ready:
+            return
+        if (
+            self._active_refresh is not None
+            or self._metadata_refresh_pool.activeThreadCount() > 0
+        ):
+            self._schedule_metadata_refresh_close_poll()
+            return
+        self._close_ready = True
+        self.close()
+
+    def _metadata_refresh_failed(
+        self,
+        operation: _ActiveRefresh,
+        error_type: str,
+    ) -> None:
+        safe_error_type = error_type if error_type.isidentifier() else "RefreshError"
+        cleanup_ok = self._retire_metadata_refresh(
+            operation,
+            remove_staging=True,
+        )
+        self._update_selection_controls()
+        record_breadcrumb(
+            "metadata_refresh_failed",
+            selected_count=len(operation.snapshots),
+            error_type=safe_error_type,
+            cleanup_ok=cleanup_ok,
+        )
+        QMessageBox.warning(
+            self,
+            "Refresh failed",
+            "The refresh could not be completed. No tiles were changed.",
+        )
+
+    @Slot(object, object, object)
+    def _on_metadata_refresh_finished(
+        self,
+        operation_token: object,
+        results_payload: object,
+        error_payload: object,
+    ) -> None:
+        operation = self._active_refresh
+        if operation is None or operation.token is not operation_token:
+            return
+
+        if (
+            self._closing
+            or operation.cancellation.is_set()
+            or not self._operation_guard.is_current(operation.token)
+        ):
+            cleanup_ok = self._retire_metadata_refresh(
+                operation,
+                remove_staging=True,
+            )
+            record_breadcrumb(
+                "metadata_refresh_cancelled",
+                selected_count=len(operation.snapshots),
+                cleanup_ok=cleanup_ok,
+            )
+            if self._closing:
+                self._schedule_metadata_refresh_close_poll()
+            else:
+                self._update_selection_controls()
+            return
+
+        if error_payload is not None:
+            error_type = (
+                error_payload if isinstance(error_payload, str) else "WorkerError"
+            )
+            self._metadata_refresh_failed(operation, error_type)
+            return
+        if not isinstance(results_payload, tuple) or not all(
+            isinstance(result, RefreshResult) for result in results_payload
+        ):
+            self._metadata_refresh_failed(operation, "InvalidWorkerResult")
+            return
+
+        results = cast(tuple[RefreshResult, ...], results_payload)
+        if any(result.cancelled for result in results):
+            self._metadata_refresh_failed(operation, "CancelledRefresh")
+            return
+        if not self._refresh_completion_matches(operation, results):
+            self._metadata_refresh_failed(operation, "StaleTileState")
+            return
+
+        candidate, detached_by_identity = self._detached_configuration()
+        retained_icons: set[Path] = set()
+        changed_tiles = 0
+        name_updates = 0
+        icon_updates = 0
+        for snapshot, result in zip(operation.snapshots, results, strict=True):
+            original = operation.tiles_by_token[snapshot.token]
+            detached = detached_by_identity.get(id(original))
+            if detached is None:
+                self._metadata_refresh_failed(operation, "StaleTileState")
+                return
+            merged = merge_refresh_result(snapshot, result)
+            refreshed_icon = merged.icon
+            if merged.icon_changed:
+                if refreshed_icon is None:
+                    self._metadata_refresh_failed(operation, "InvalidIconResult")
+                    return
+                staged_icon = _resolved_staged_icon(
+                    operation.batch_directory,
+                    Path(refreshed_icon),
+                )
+                if staged_icon is None:
+                    self._metadata_refresh_failed(operation, "InvalidIconResult")
+                    return
+                refreshed_icon = str(staged_icon)
+                retained_icons.add(staged_icon)
+            detached.name = merged.name
+            detached.icon = refreshed_icon
+            if merged.changed:
+                changed_tiles += 1
+            name_updates += int(merged.name_changed)
+            icon_updates += int(merged.icon_changed)
+
+        diagnostics = summarize_refresh_results(results)
+        if changed_tiles == 0:
+            cleanup_ok = self._retire_metadata_refresh(
+                operation,
+                remove_staging=True,
+            )
+            self._update_selection_controls()
+            record_breadcrumb(
+                "metadata_refresh_no_changes",
+                selected_count=len(operation.snapshots),
+                title_errors=diagnostics.title_errors,
+                favicon_errors=diagnostics.favicon_errors,
+                cleanup_ok=cleanup_ok,
+            )
+            if cleanup_ok:
+                QMessageBox.information(
+                    self,
+                    "Nothing updated",
+                    "No names or icons were updated. Existing values were kept.",
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Refresh failed",
+                    "The refresh could not be completed. No tiles were changed.",
+                )
+            return
+
+        if not _prune_refresh_directory(
+            operation.batch_directory,
+            retained_icons,
+        ):
+            self._metadata_refresh_failed(operation, "StagingPruneError")
+            return
+
+        try:
+            candidate.save()
+        except Exception as exc:
+            # Keep every persistence failure on the detached side of the transaction.
+            self._metadata_refresh_failed(
+                operation,
+                type(exc).__name__ or "SaveError",
+            )
+            return
+
+        selected_tab = operation.tab_name
+        self._retire_metadata_refresh(operation, remove_staging=False)
+        self.cfg = candidate
+        self._exit_selection_mode(repopulate=False)
+        self.rebuild()
+        self._set_current_tab_by_name(selected_tab)
+        record_breadcrumb(
+            "metadata_refresh_completed",
+            selected_count=len(operation.snapshots),
+            changed_tiles=changed_tiles,
+            name_updates=name_updates,
+            icon_updates=icon_updates,
+            title_errors=diagnostics.title_errors,
+            favicon_errors=diagnostics.favicon_errors,
+        )
+        QMessageBox.information(
+            self,
+            "Refresh complete",
+            (
+                f"Updated {changed_tiles} "
+                f"{'tile' if changed_tiles == 1 else 'tiles'}: "
+                f"{name_updates} {'name' if name_updates == 1 else 'names'} and "
+                f"{icon_updates} {'icon' if icon_updates == 1 else 'icons'}."
+            ),
+        )
+
+    def _update_selection_controls(self) -> None:
+        selecting = self._selection_active()
+        busy = self._active_refresh is not None
+        selected_count = len(self._selected_tokens)
+        total_count = len(self._selection_tiles)
+
+        for action in (self.add_action, self.import_action, self.select_tiles_action):
+            action.setVisible(not selecting)
+        for action in self._selection_toolbar_actions:
+            action.setVisible(selecting)
+
+        self.add_action.setEnabled(not selecting and not busy)
+        self.import_action.setEnabled(not selecting and not busy)
+        active_tab_has_tiles = any(
+            tile.tab == self.current_tab() for tile in self.cfg.tiles
+        )
+        self.select_tiles_action.setEnabled(not busy and active_tab_has_tiles)
+        self.selection_count_label.setText(
+            f"Refreshing {selected_count}…" if busy else f"{selected_count} selected"
+        )
+        self.select_all_action.setEnabled(
+            selecting and not busy and selected_count < total_count
+        )
+        self.clear_selection_action.setEnabled(
+            selecting and not busy and selected_count > 0
+        )
+        self.refresh_metadata_action.setEnabled(
+            selecting and not busy and selected_count > 0
+        )
+        self.done_selection_action.setEnabled(selecting and not busy)
+
+        for action in self._tab_mutation_actions:
+            action.setEnabled(not selecting and not busy)
+        self._update_toggle_tab_action()
+        self.auto_fit_action.setEnabled(not selecting and not busy)
+        self.tabs_widget.tabBar().setMovable(not selecting and not busy)
+        self.tabs_widget.setEnabled(not busy)
+
     def _on_tab_moved(self, from_index: int, to_index: int) -> None:
+        if self._selection_active() or self._active_refresh is not None:
+            return
         tab_bar = self.tabs_widget.tabBar()
         visible_ids_after = [tab_bar.tabData(index) for index in range(tab_bar.count())]
         hidden_ids = [self.cfg.tab_ids.get(title) for title in self.cfg.hidden_tabs]
@@ -1038,6 +1874,8 @@ class Main(QMainWindow):
         visible = self._visible_tabs()
         allow_hide = not hidden and len(visible) > 1
         self.toggle_tab_action.setEnabled(hidden or allow_hide)
+        if self._selection_active() or self._active_refresh is not None:
+            self.toggle_tab_action.setEnabled(False)
 
     def _toggle_auto_fit(self, checked: bool) -> None:
         self.cfg.auto_fit = checked
@@ -1053,27 +1891,34 @@ class Main(QMainWindow):
         record_breadcrumb("window_shown")
 
     def rebuild(self) -> None:
-        self.tabs_widget.clear()
-        self._grids: dict[str, QGridLayout] = {}
-        self._tab_viewports.clear()
-        tab_bar = self.tabs_widget.tabBar()
-        for tab in self._visible_tabs():
-            scroll = QScrollArea()
-            scroll.setWidgetResizable(True)
-            container = QWidget()
-            grid = QGridLayout(container)
-            grid.setSpacing(12)
-            grid.setContentsMargins(16, 16, 16, 16)
-            scroll.setWidget(container)
-            self._wire_tab_whitespace_menu(scroll)
-            tab_index = self.tabs_widget.addTab(scroll, tab)
-            tab_bar.setTabData(tab_index, self.cfg.tab_ids[tab])
-            self._grids[tab] = grid
-            self._populate_tab(tab)
+        if self._selection_active():
+            self._exit_selection_mode(repopulate=False)
+        self._rebuilding = True
+        try:
+            self.tabs_widget.clear()
+            self._grids: dict[str, QGridLayout] = {}
+            self._tab_viewports.clear()
+            tab_bar = self.tabs_widget.tabBar()
+            for tab in self._visible_tabs():
+                scroll = QScrollArea()
+                scroll.setWidgetResizable(True)
+                container = QWidget()
+                grid = QGridLayout(container)
+                grid.setSpacing(12)
+                grid.setContentsMargins(16, 16, 16, 16)
+                scroll.setWidget(container)
+                self._wire_tab_whitespace_menu(scroll)
+                tab_index = self.tabs_widget.addTab(scroll, tab)
+                tab_bar.setTabData(tab_index, self.cfg.tab_ids[tab])
+                self._grids[tab] = grid
+                self._populate_tab(tab)
+        finally:
+            self._rebuilding = False
         QTimer.singleShot(
             0, lambda: self.resize_to_fit_tiles(snap_window=self.cfg.auto_fit)
         )
         self._update_toggle_tab_action()
+        self._update_selection_controls()
 
     def _populate_tab(self, tab: str) -> None:
         grid = self._grids[tab]
@@ -1081,6 +1926,8 @@ class Main(QMainWindow):
             item = grid.takeAt(0)
             w = item.widget()
             if w:
+                w.setEnabled(False)
+                w.hide()
                 w.deleteLater()
 
         if self.cfg.auto_fit:
@@ -1095,6 +1942,9 @@ class Main(QMainWindow):
             def move(f: int, t: int, tab_name: str = tab) -> None:
                 self.move_tile(tab_name, f, t)
 
+            selection_token = None
+            if tab == self._selection_tab_name:
+                selection_token = self._selection_token_for_tile(tile)
             btn = TileButton(
                 tile,
                 idx,
@@ -1105,6 +1955,11 @@ class Main(QMainWindow):
                 on_move=move,
                 on_change_tab=self.change_tile_tab,
                 tabs=all_tabs,
+                selection_token=selection_token,
+                selected=selection_token in self._selected_tokens,
+                on_toggle_selection=(
+                    self._toggle_tile_selection if selection_token is not None else None
+                ),
             )
             grid.addWidget(btn, r, c)
             c += 1
@@ -1122,6 +1977,8 @@ class Main(QMainWindow):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
         try:
             if event.type() == QEvent.Type.ContextMenu and obj in self._tab_viewports:
+                if self._selection_active():
+                    return True
                 cme = cast(QContextMenuEvent, event)
                 # Use the event's globalPos() to avoid touching the (possibly deleted) widget.
                 global_pos = cme.globalPos()
@@ -1151,6 +2008,8 @@ class Main(QMainWindow):
         return False
 
     def _show_whitespace_menu(self, global_pos: QPoint) -> None:
+        if self._selection_active():
+            return
         menu = QMenu(self)
         act = menu.addAction("Add Tile…")
         act.triggered.connect(lambda: self.add_tile(self.current_tab()))
@@ -1253,6 +2112,21 @@ class Main(QMainWindow):
             self._fit_guard = False
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: D401
+        operation = self._active_refresh
+        pool_active = self._metadata_refresh_pool.activeThreadCount() > 0
+        if not self._close_ready and (
+            self._closing or operation is not None or pool_active
+        ):
+            self._closing = True
+            if operation is not None:
+                operation.cancellation.set()
+            self._operation_guard.invalidate()
+            self.setEnabled(False)
+            event.ignore()
+            self._schedule_metadata_refresh_close_poll()
+            return
+
+        self._closing = True
         try:
             g = self.normalGeometry() if self.isMaximized() else self.frameGeometry()
             self.cfg.window_w = int(g.width())
@@ -1279,6 +2153,10 @@ class Main(QMainWindow):
 
     # -------- actions --------
     def open_tile(self, tile: Tile) -> None:
+        if isinstance(self, Main) and (
+            self._selection_active() or self._active_refresh is not None
+        ):
+            return
         logger = logging.getLogger(__name__)
         plan = build_launch_plan(tile)
         url = sanitize_url(tile.url)
@@ -1549,6 +2427,8 @@ class Main(QMainWindow):
             )
 
     def move_tile(self, tab: str, from_idx: int, to_idx: int) -> None:
+        if self._selection_active() or self._active_refresh is not None:
+            return
         if from_idx == to_idx:
             return
         indices = [i for i, t in enumerate(self.cfg.tiles) if t.tab == tab]
