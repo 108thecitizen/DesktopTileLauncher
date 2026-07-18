@@ -326,8 +326,9 @@ The manifest contains:
 - `manifest_version`, immutable `id`, creation/update times, monotonic transition/attempt
   number, source type, commit-authorization time, and state.
 - Base schema version and a batch-relative, exact-byte last-good configuration snapshot with
-  byte size and `base_config_sha256`, plus the batch-relative candidate configuration path,
-  byte size, and `candidate_config_sha256` once prepared.
+  byte size and `base_config_sha256` from `preparing` onward, plus the batch-relative
+  candidate configuration path, byte size, and `candidate_config_sha256` once candidate
+  construction succeeds and no later than `prepared`.
 - Persisted planned Workspace, Tab, Resource, and Placement UUIDs so Resume is idempotent and
   cannot create duplicate entities.
 - An ordered item list with source ordinal, validation result, duplicate result, staged
@@ -389,18 +390,28 @@ The manifest state machine is normative:
    its size and digest match; a different file at the intended path is a conflict and is
    never overwritten.
 7. After all assets and the candidate are verified, the manifest becomes `prepared`. DTL
-   rechecks that current `config.json` still matches `base_config_sha256`; otherwise it
-   enters `conflict` without writing configuration.
-8. DTL persists `committing`, atomically replaces `config.json` once with the already
-   persisted candidate, then reloads and verifies the exact candidate digest and graph. If
-   verification fails and current bytes still equal the recorded candidate, DTL atomically
-   restores and verifies the base snapshot and records `failed_rolled_back`. If safe restore
-   cannot be proven, it retains both snapshots and enters `conflict` without cleanup.
-9. Positive verification persists `config_committed`, then `finalizing`. DTL removes batch
-   staging, source locators, both configuration snapshots, and only unreferenced
+   acquires the exclusive configuration-writer lock honored by every configuration mutator
+   and, while holding it, rechecks that current `config.json` still matches
+   `base_config_sha256`; otherwise it enters `conflict` without writing configuration.
+8. Still holding the writer lock, DTL persists `committing`, atomically replaces
+   `config.json` once with the already persisted candidate, then reloads and verifies the
+   exact candidate digest and graph. If verification fails, DTL first persists the
+   post-write failure phase. When current bytes still equal the recorded candidate, it then
+   atomically restores and verifies the base snapshot and records `failed_rolled_back`. If
+   safe restore cannot be proven, it retains both snapshots and enters `conflict` without
+   cleanup. The lock remains held through verification, any safe restore, and the resulting
+   manifest transition, closing the digest-check/replacement lost-update window.
+9. Positive verification persists `config_committed`, then enters `finalizing` while the
+   configuration-writer lock still excludes every other configuration mutation. DTL removes
+   batch staging, source locators, and only unreferenced
    `created_by_batch` assets. A final asset is deletable only when neither committed config
    nor any other live manifest references it; `reused` assets are never deleted by this
-   batch. DTL persists `committed` and removes the journal when cleanup is complete.
+   batch. The manifest and both configuration snapshots remain until DTL persists
+   `committed` and atomically renames the whole batch directory to a validated deletion-only
+   tombstone under the private staging root. Only then does DTL release the writer lock and
+   remove that tombstone idempotently. Thus no conforming mutator can create a legitimate
+   post-candidate configuration while a live committed/finalizing journal still requires an
+   exact candidate match.
 
 On startup, bounded scanning of validated batch directories reconciles manifest state and
 exact configuration bytes before normal configuration mutation. Neither the state nor a
@@ -409,18 +420,22 @@ digest match is sufficient alone:
 | Manifest state | No base snapshot yet | Config equals base digest | Config equals candidate digest | Config equals neither |
 | --- | --- | --- | --- | --- |
 | `staging`, `reviewed` | Offer Resume or Abandon; Commit later captures the then-current base | Invalid state pair; enter `conflict` | Invalid state pair; enter `conflict` | Invalid state pair; enter `conflict` |
-| `preparing`, `prepared`, `failed_precommit`, `failed_rolled_back` | Invalid state pair; enter `conflict` | Offer the state-appropriate retry/Resume or Abandon; do not write automatically | Invalid state pair; enter `conflict` | Enter `conflict` |
-| `committing` | Invalid state pair; enter `conflict` | The authorized replacement did not complete; revalidate the plan and resume the commit boundary | Verify the candidate graph/assets, persist `config_committed`, and finish cleanup | Enter `conflict` |
+| `preparing`, or `failed_precommit` before candidate creation | Invalid state pair; enter `conflict` | Offer the state-appropriate retry/Resume or Abandon; do not write automatically | Not applicable because no candidate digest is recorded | Enter `conflict` |
+| `preparing` or `failed_precommit` after candidate creation; `prepared`; `failed_rolled_back` | Invalid state pair; enter `conflict` | Validate and reuse the candidate where appropriate, then offer the state-appropriate explicit retry/Resume or Abandon; do not write automatically | Invalid state pair; these states do not permit candidate bytes to be authoritative, so enter `conflict` | Enter `conflict` |
+| `committing` | Invalid state pair; enter `conflict` | If no post-write failure is recorded, the authorized replacement did not complete: revalidate and resume under the writer lock. If a post-write failure is recorded, verify the restored base, persist `failed_rolled_back`, and require explicit retry/recovery | If no post-write failure is recorded, verify the candidate graph/assets, persist `config_committed`, and finish cleanup. If failure is recorded, attempt safe base restore or enter `conflict` | Enter `conflict` |
 | `config_committed`, `finalizing`, `committed` | Invalid state pair; enter `conflict` | Enter `conflict`; committed state cannot be inferred from the journal alone | Verify and idempotently finish cleanup without importing again | Enter `conflict` |
 | `cancelling`, `cancelled` | Continue pre-commit abandonment and cleanup | Continue pre-commit abandonment and cleanup | Enter `conflict`; Abandon cannot undo committed configuration | Enter `conflict` |
 | `conflict` | Require explicit recovery | Require explicit recovery | Require explicit recovery | Require explicit recovery |
 
 For `staging` and `reviewed`, the base snapshot and both digest comparisons are not yet
-applicable; their manifest must not claim those fields. For later states they are required.
-A candidate digest match while `committing` is eligible for successful reconciliation only
-when the manifest records no post-write verification failure. If such a failure was already
-recorded, DTL attempts the specified safe base restore or enters `conflict`; it does not
-reinterpret the digest match as success.
+applicable; their manifest must not claim those fields. The verified base snapshot is
+required from `preparing` onward. Candidate fields may be absent only during candidate
+construction or a `failed_precommit` reached before it completed; they are required from
+`prepared` onward. A candidate digest match while `committing` is eligible for successful
+reconciliation only when the manifest records no post-write verification failure. If such a
+failure was already recorded, DTL attempts the specified safe base restore or enters
+`conflict`; it does not reinterpret the digest match as success. Recovery takes the same
+exclusive writer lock before any resumed replacement or restore.
 
 A missing/corrupt manifest, integrity mismatch, missing asset, or final-path collision with
 different bytes is preserved as an explicit recovery condition. DTL never guesses the
@@ -431,12 +446,14 @@ Resume reuses the persisted entity IDs, paths, order positions, and reviewed pla
 Import first persists `cancelling`, then removes only validated batch staging and
 reference-checked assets that are not in committed configuration, making interruption during
 cleanup itself resumable. Cleanup also checks every other live manifest before deleting an
-asset. When abandonment cleanup succeeds, DTL atomically persists `cancelled`, removes the
-base/candidate snapshots and source locators, and only then removes the journal. Once
-candidate configuration is detected as committed, Abandon Import cannot roll it back; only
-final cleanup and later user-level Placement actions apply. Successful commit likewise
-removes snapshots, staging, and source locators before its journal is deleted. Conflict or
-quarantined batches retain those private artifacts until an explicit recovery retention or
+asset. When abandonment cleanup succeeds, DTL removes source locators and ordinary staging
+but retains the manifest and any base/candidate snapshots, atomically persists `cancelled`,
+then atomically renames the whole batch directory to a validated deletion-only tombstone and
+removes it idempotently. A startup scan finishes deletion of recognized tombstones and never
+interprets their contents as a live batch. Once candidate configuration is detected as
+committed, Abandon Import cannot roll it back; only final cleanup and later user-level
+Placement actions apply. Successful commit uses the same tombstone boundary. Conflict or
+quarantined batches retain their private artifacts until an explicit recovery retention or
 disposal action succeeds. Unresolved batches are never silently age-deleted.
 
 M2 rules:
@@ -626,12 +643,13 @@ Validation is strict. Repair belongs in an explicit migration step, not in gener
 loading.
 
 ImportBatch manifests are validated separately from committed version 1 state. Validation
-requires a supported manifest version and legal state transition; exact base/candidate
-digests; unique planned entity IDs; complete item outcomes and both order insertions; size
-and digest agreement for every staged/final asset; contained relative paths; and a current
-configuration digest equal to either the recorded base or candidate before automatic
-reconciliation. Anything else enters explicit recovery without configuration mutation or
-automatic deletion.
+requires a supported manifest version and legal state transition; the state-appropriate
+base snapshot/digest and, once constructed, candidate snapshot/digest; unique planned entity
+IDs; complete item outcomes and both order insertions; size and digest agreement for every
+staged/final asset; and contained relative paths. Before automatic reconciliation after base
+capture, current configuration must equal the state-appropriate recorded base or candidate
+digest. A `staging` or `reviewed` batch has neither digest and may only Resume or Abandon.
+Anything else enters explicit recovery without configuration mutation or automatic deletion.
 
 ## Implementation sequence and issue boundaries
 
