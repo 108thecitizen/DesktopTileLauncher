@@ -17,6 +17,10 @@
 - Keep refresh diagnostics privacy-safe by recording aggregate counts and categories rather than
   URLs, domains, names, retrieved titles, icon paths, page content, or sensitive exception details.
 
+### Docs
+- Define the proposed vNext state, identity, ordering, ownership, import, recovery, and
+  migration contract for the Windows Content Triage roadmap.
+
 ## v0.3.5 - 2026-06-17
 
 ### Security/Privacy
