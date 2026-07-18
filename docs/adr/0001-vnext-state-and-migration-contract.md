@@ -1,6 +1,6 @@
 # ADR-0001: vNext State and Migration Contract for Content Triage
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-18
 - Decision owners: DesktopTileLauncher maintainers
 - Tracking issue: #106
@@ -51,6 +51,9 @@ This ADR defines the target contract. It does not change the runtime schema or b
    committed state never references an unavailable staged asset.
 9. Recovery precedes migration. Migration validates a complete candidate before atomic
    replacement and never overwrites the last good configuration on failure.
+10. Legacy migration always names the single created Workspace `Default Workspace`. The
+    existing launcher title remains `application.title` only and is not reused as the
+    Workspace name.
 
 ## Version envelope
 
@@ -81,7 +84,8 @@ This ADR defines the target contract. It does not change the runtime schema or b
 ### Root state
 
 Version 1 has this logical shape. Arrays are shown for readability; each `id` must be
-unique within the complete document.
+unique within the complete document. The empty arrays identify top-level collections and do
+not by themselves form a valid graph.
 
 ```json
 {
@@ -99,6 +103,10 @@ unique within the complete document.
   "extensions": {}
 }
 ```
+
+For migration, those two names are deliberately independent. A legacy launcher titled
+`My Launcher` retains `application.title: "My Launcher"`, while the Workspace referenced by
+`default_workspace_id` has `name: "Default Workspace"`.
 
 An ImportBatch is deliberately absent from committed configuration. Its recoverable,
 short-lived staging manifest is defined separately below.
@@ -545,7 +553,8 @@ Migration from the current format to version 1 follows this mapping.
 
 | Legacy value | Version 1 value |
 |---|---|
-| top-level `title` | `application.title`; also the default Workspace name when non-blank, otherwise `Default Workspace` |
+| top-level `title` | `application.title` only, preserved independently from Workspace naming |
+| synthetic migrated Workspace | exactly one Workspace named `Default Workspace`; its ID becomes `application.default_workspace_id` and it owns every migrated Tab |
 | `columns`, `auto_fit`, window geometry | local Workspace/window DeviceBinding settings |
 | `tabs` and tile-referenced missing tabs | Tab entities in normalized current order |
 | valid `tab_ids` | retained Tab IDs |
@@ -566,6 +575,11 @@ Migration from the current format to version 1 follows this mapping.
 Additional rules:
 
 - The source document is treated as immutable input.
+- Migration creates exactly one Workspace named `Default Workspace`, regardless of whether
+  the legacy launcher title is blank or non-blank. It never derives, copies, or falls back
+  the Workspace name from that title. The original title is preserved in `application.title`
+  under the existing title rules and is not trimmed or normalized merely for Workspace
+  naming.
 - Migration never deduplicates Resources, merges tabs, normalizes user-facing labels, drops
   tiles, or changes launch behavior.
 - Because migration creates one distinct Resource per legacy Tile, moving each legacy name
@@ -580,6 +594,12 @@ Additional rules:
   titles are added, duplicate titles collapse to the first occurrence, and an invalid tile
   Tab falls back to the first Tab only when no source title can be recovered.
 - The candidate must pass all version 1 invariants before any write.
+
+Migration-specific tests must prove that exactly one Workspace is created, its name is
+exactly `Default Workspace`, its ID is the `default_workspace_id` target, and
+`application.title` equals the preserved legacy launcher title. Cases include a custom
+title, a blank/default title, and a non-ASCII title, demonstrating that the two names are
+independent.
 
 New photo imports after migration create image Resources, New Placements, and, when the batch
 creates a Tab, a Kanban Tab with the default Display filter of New plus In Use.
@@ -656,8 +676,9 @@ Anything else enters explicit recovery without configuration mutation or automat
 - Q3: preserve malformed input, expose recovery choices, and never overwrite the source.
 - Q4: add the schema-version registry, pure migration harness, validation, rollback, and
   hermetic tests. It does not add feature UI.
-- Q5: introduce the default Workspace and stable Workspace/Tab identity migration while
-  preserving existing valid Tab IDs and behavior.
+- Q5: create the default Workspace named exactly `Default Workspace`, preserve the existing
+  launcher title in `application.title`, and introduce stable Workspace/Tab identity
+  migration while preserving existing valid Tab IDs and behavior.
 - Later Resource/Placement slice: introduce typed targets, placement ownership, status, and
   independent Display/Kanban orders.
 - Later image/import slices: implement the RD-09 recovery journal, managed assets,
@@ -674,6 +695,11 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
 
 - Mutable titles and paths stop serving as identity.
 - Existing stable Tab IDs are preserved instead of replaced.
+- Existing users retain their launcher title while gaining a separately named default
+  Workspace. Changing `application.title` does not rename a Workspace, and later renaming
+  that Workspace does not change the launcher title.
+- `Default Workspace` is a migration default, not a permanently reserved Workspace name or
+  a special naming constraint for future Workspaces.
 - Shared resources and per-tab workflow state have an unambiguous ownership boundary.
 - Independent Display and Kanban orders support familiar launch layouts and deliberate
   review queues without one workflow rearranging the other.
@@ -753,20 +779,22 @@ This ADR intentionally does not decide:
 
 ## Review checklist
 
-- [ ] Version 0 and version 1 boundaries are unambiguous.
-- [ ] Entity identity, ownership, references, and deletion rules are complete.
-- [ ] Resource defaults, Placement overrides, inheritance, refresh, and legacy presentation
+- [x] Version 0 and version 1 boundaries are unambiguous.
+- [x] Entity identity, ownership, references, and deletion rules are complete.
+- [x] Resource defaults, Placement overrides, inheritance, refresh, and legacy presentation
   migration follow the approved ownership rules.
-- [ ] Existing stable Tab IDs and every current user-visible field are preserved.
-- [ ] Visible, Hidden, Archived, Archive, and Restore follow the approved derived-category
+- [x] Existing stable Tab IDs and every current user-visible field are preserved.
+- [x] Version 0 migration creates exactly one `Default Workspace` as the application default
+  while independently preserving the legacy launcher title in `application.title`.
+- [x] Visible, Hidden, Archived, Archive, and Restore follow the approved derived-category
   and prior-visibility rules.
-- [ ] Independent Display/Kanban ordering, status transitions, migration, and Display-derived
+- [x] Independent Display/Kanban ordering, status transitions, migration, and Display-derived
   export order follow the approved rules.
-- [ ] Original, managed copy, Resource, and Placement lifecycles are distinct.
-- [ ] Import journals survive every crash boundary; Resume is idempotent; pre-commit Abandon
+- [x] Original, managed copy, Resource, and Placement lifecycles are distinct.
+- [x] Import journals survive every crash boundary; Resume is idempotent; pre-commit Abandon
   Import changes no committed state; post-commit recovery only finalizes cleanup; conflicts
   never overwrite config; and no original file is a cleanup target.
-- [ ] Manifest/candidate privacy, bounded scanning, path containment, digest verification,
+- [x] Manifest/candidate privacy, bounded scanning, path containment, digest verification,
   atomic transitions, partial-failure reporting, and the confirmed M2 limits are covered.
-- [ ] Q3, Q4, Q5, and later implementation slices can be issued independently.
-- [ ] No runtime or persisted-schema change is included in this ADR PR.
+- [x] Q3, Q4, Q5, and later implementation slices can be issued independently.
+- [x] No runtime or persisted-schema change is included in this ADR PR.
