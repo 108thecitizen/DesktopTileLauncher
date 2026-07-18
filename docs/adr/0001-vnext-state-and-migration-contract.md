@@ -30,7 +30,7 @@ This ADR defines the target contract. It does not change the runtime schema or b
 
 1. A missing `schema_version` is legacy version 0. The first explicit version is 1.
 2. Version 1 separates portable application state from device-specific bindings and
-   transient import staging.
+   short-lived, recoverable import staging stored outside committed configuration.
 3. Workspace, Tab, Resource, Placement, DeviceBinding, and ImportBatch use immutable,
    canonical UUID strings.
 4. A Resource owns the underlying target, managed content, intrinsic metadata, and default
@@ -45,8 +45,10 @@ This ADR defines the target contract. It does not change the runtime schema or b
    one does not change the other. Ordered exports use Display order initially; version 1 has
    no separate export order.
 7. Discard removes only a Placement. It never deletes an original file or a managed copy.
-8. ImportBatch is a durable staging manifest outside the committed configuration. A batch
-   commits one validated state replacement or makes no persistent state change.
+8. ImportBatch is a durable, recoverable staging manifest outside the committed
+   configuration. Pre-commit batches can be resumed or abandoned after interruption. Commit
+   durably promotes every required asset before one atomic configuration replacement, so
+   committed state never references an unavailable staged asset.
 9. Recovery precedes migration. Migration validates a complete candidate before atomic
    replacement and never overwrites the last good configuration on failure.
 
@@ -98,8 +100,8 @@ unique within the complete document.
 }
 ```
 
-An ImportBatch is deliberately absent from committed state. Its staging manifest is
-defined separately below.
+An ImportBatch is deliberately absent from committed configuration. Its recoverable,
+short-lived staging manifest is defined separately below.
 
 ## Identity contract
 
@@ -314,19 +316,128 @@ and device enrollment remain out of scope.
 
 ### ImportBatch
 
-An ImportBatch has an immutable UUID but is transient workflow state, not committed
-application state. Its durable manifest lives in a batch-specific directory beneath DTL's
-staging root so cancellation or crash recovery can clean up safely.
+An ImportBatch has an immutable UUID and is short-lived workflow state, not committed
+application state. Unlike memory-only staging, its manifest and any staged files survive
+process interruption. Each batch lives in a UUID-named directory beneath DTL's private
+staging root. The manifest is rewritten atomically after every durable transition.
 
 The manifest contains:
 
-- `id`, creation time, source type, and state: `staging`, `reviewed`, `committing`,
-  `committed`, `cancelled`, or `failed`.
+- `manifest_version`, immutable `id`, creation/update times, monotonic transition/attempt
+  number, source type, commit-authorization time, and state.
+- Base schema version and a batch-relative, exact-byte last-good configuration snapshot with
+  byte size and `base_config_sha256`, plus the batch-relative candidate configuration path,
+  byte size, and `candidate_config_sha256` once prepared.
+- Persisted planned Workspace, Tab, Resource, and Placement UUIDs so Resume is idempotent and
+  cannot create duplicate entities.
 - An ordered item list with source ordinal, validation result, duplicate result, staged
-  managed-copy path, destination Tab ID or proposed new-tab token, and final outcome.
+  relative path, intended final managed relative path, byte size, media type, SHA-256 digest,
+  destination Tab ID or proposed new-tab token, intended Display/Kanban insertion, and final
+  outcome.
+- For every final asset, an installation result of `created_by_batch` or `reused`, so cleanup
+  never treats a pre-existing matching asset as owned by this batch.
 - The optional one new Tab proposal for M2.
-- Sanitized failure categories; never file content, credentials, or unnecessary private
-  source paths in logs.
+- Commit/failure phase, sanitized error category, cleanup progress, and whether configuration
+  commit was positively detected.
+- Only the minimum local source locator needed to resume an unfinished acquisition. Source
+  paths and item titles may be present in the private manifest when necessary, but never in
+  ordinary logs or diagnostics.
+- Sanitized failure categories; never file content, credentials, tokens, or secrets.
+
+The state machine is:
+
+```text
+staging -> reviewed -> preparing -> prepared -> committing
+        -> config_committed -> finalizing -> committed
+```
+
+Before configuration commit, cancellation uses `cancelling -> cancelled`. Recoverable
+non-success states are `failed_precommit`, `failed_rolled_back`, and `conflict`; none permits
+an automatic configuration write.
+
+Manifest, base-snapshot, and candidate files use the same atomic temporary-write, flush, and
+replace discipline as configuration. Manifest integrity means successful strict parsing,
+exact schema validation, a monotonic transition number, a legal state transition, and
+agreement among recorded sizes, digests, paths, and item outcomes; no self-referential
+manifest checksum is implied. All cleanup targets are validated relative paths contained
+beneath the batch or managed root; manifests never turn an original source path, link escape,
+unresolved variable, or arbitrary absolute path into a deletion target.
+
+Manifest, base/candidate snapshots, and staged content are bounded, local-only, excluded
+from portable state and synchronization, and readable only with the current user's
+application-data permissions. Configuration snapshots receive the same protection as
+`config.json`. An unknown, malformed, or integrity-failing manifest is preserved for
+explicit recovery; DTL does not guess its state, commit it, or delete associated files
+automatically.
+
+The manifest state machine is normative:
+
+1. Selection creates the batch directory and `staging` manifest before the first staged
+   file is written.
+2. Acquisition, validation, duplicate review, and routing choices update the manifest
+   atomically. Closing or crashing before commit leaves committed configuration unchanged.
+3. On the next launch, an interrupted pre-commit batch is detected and offered for Resume
+   or Abandon Import. DTL never silently commits a merely staged or reviewed batch.
+4. Pressing Commit freezes the reviewed item set, planned entity IDs, destination/order
+   choices, and exact current configuration bytes. DTL atomically persists and verifies the
+   last-good base snapshot, size, schema version, and digest before entering `preparing`.
+5. DTL builds, persists, and validates the complete candidate configuration beneath the
+   batch root. It records the candidate size/digest and verifies every staged asset.
+6. Required managed files are installed at collision-safe final paths beneath the managed
+   root and made durable before configuration replacement. Each installation and its
+   `created_by_batch`/`reused` result is journaled. A pre-existing file is reused only when
+   its size and digest match; a different file at the intended path is a conflict and is
+   never overwritten.
+7. After all assets and the candidate are verified, the manifest becomes `prepared`. DTL
+   rechecks that current `config.json` still matches `base_config_sha256`; otherwise it
+   enters `conflict` without writing configuration.
+8. DTL persists `committing`, atomically replaces `config.json` once with the already
+   persisted candidate, then reloads and verifies the exact candidate digest and graph. If
+   verification fails and current bytes still equal the recorded candidate, DTL atomically
+   restores and verifies the base snapshot and records `failed_rolled_back`. If safe restore
+   cannot be proven, it retains both snapshots and enters `conflict` without cleanup.
+9. Positive verification persists `config_committed`, then `finalizing`. DTL removes batch
+   staging, source locators, both configuration snapshots, and only unreferenced
+   `created_by_batch` assets. A final asset is deletable only when neither committed config
+   nor any other live manifest references it; `reused` assets are never deleted by this
+   batch. DTL persists `committed` and removes the journal when cleanup is complete.
+
+On startup, bounded scanning of validated batch directories reconciles manifest state and
+exact configuration bytes before normal configuration mutation. Neither the state nor a
+digest match is sufficient alone:
+
+| Manifest state | No base snapshot yet | Config equals base digest | Config equals candidate digest | Config equals neither |
+| --- | --- | --- | --- | --- |
+| `staging`, `reviewed` | Offer Resume or Abandon; Commit later captures the then-current base | Invalid state pair; enter `conflict` | Invalid state pair; enter `conflict` | Invalid state pair; enter `conflict` |
+| `preparing`, `prepared`, `failed_precommit`, `failed_rolled_back` | Invalid state pair; enter `conflict` | Offer the state-appropriate retry/Resume or Abandon; do not write automatically | Invalid state pair; enter `conflict` | Enter `conflict` |
+| `committing` | Invalid state pair; enter `conflict` | The authorized replacement did not complete; revalidate the plan and resume the commit boundary | Verify the candidate graph/assets, persist `config_committed`, and finish cleanup | Enter `conflict` |
+| `config_committed`, `finalizing`, `committed` | Invalid state pair; enter `conflict` | Enter `conflict`; committed state cannot be inferred from the journal alone | Verify and idempotently finish cleanup without importing again | Enter `conflict` |
+| `cancelling`, `cancelled` | Continue pre-commit abandonment and cleanup | Continue pre-commit abandonment and cleanup | Enter `conflict`; Abandon cannot undo committed configuration | Enter `conflict` |
+| `conflict` | Require explicit recovery | Require explicit recovery | Require explicit recovery | Require explicit recovery |
+
+For `staging` and `reviewed`, the base snapshot and both digest comparisons are not yet
+applicable; their manifest must not claim those fields. For later states they are required.
+A candidate digest match while `committing` is eligible for successful reconciliation only
+when the manifest records no post-write verification failure. If such a failure was already
+recorded, DTL attempts the specified safe base restore or enters `conflict`; it does not
+reinterpret the digest match as success.
+
+A missing/corrupt manifest, integrity mismatch, missing asset, or final-path collision with
+different bytes is preserved as an explicit recovery condition. DTL never guesses the
+outcome, overwrites configuration, deletes assets, or retries automatically. Originals
+remain untouched.
+
+Resume reuses the persisted entity IDs, paths, order positions, and reviewed plan. Abandon
+Import first persists `cancelling`, then removes only validated batch staging and
+reference-checked assets that are not in committed configuration, making interruption during
+cleanup itself resumable. Cleanup also checks every other live manifest before deleting an
+asset. When abandonment cleanup succeeds, DTL atomically persists `cancelled`, removes the
+base/candidate snapshots and source locators, and only then removes the journal. Once
+candidate configuration is detected as committed, Abandon Import cannot roll it back; only
+final cleanup and later user-level Placement actions apply. Successful commit likewise
+removes snapshots, staging, and source locators before its journal is deleted. Conflict or
+quarantined batches retain those private artifacts until an explicit recovery retention or
+disposal action succeeds. Unresolved batches are never silently age-deleted.
 
 M2 rules:
 
@@ -336,15 +447,17 @@ M2 rules:
 - One batch may use existing tabs plus at most one newly created tab.
 - Every committed item has exactly one destination.
 - Multiple new tabs and several Placements for one Resource are deferred.
-- Cancel before commit removes staging and changes no committed configuration.
-- Validation failures are shown before commit. The user may cancel or explicitly commit the
-  valid subset; failed items never become partial Resources or Placements.
-- Commit prepares managed copies and one complete candidate configuration, validates both,
-  atomically replaces the configuration once, and then finalizes staged assets.
-- A failed commit leaves the last good configuration authoritative and retains enough
-  staging information for safe retry or cleanup.
-- A committed/cancelled manifest may be removed after cleanup. Long-term import history and
-  undo are deferred.
+- Abandon Import before configuration replacement stops at a safe boundary and changes no
+  committed configuration. It is deliberately named differently from Placement Discard.
+  After successful replacement, normal Placement actions apply and Abandon Import is no
+  longer available.
+- Validation failures are shown before commit. The user may Abandon Import or explicitly
+  commit the valid subset; failed items never become partial Resources or Placements.
+- A failed asset installation or pre-replacement validation leaves the last good
+  configuration authoritative and retains enough journaled staging information for safe
+  retry or cleanup.
+- A committed/cancelled manifest is removed after cleanup succeeds and is retained only while
+  required cleanup remains incomplete. Long-term import history and undo are deferred.
 
 ## Ordering contract
 
@@ -512,6 +625,14 @@ A version 1 candidate is valid only when:
 Validation is strict. Repair belongs in an explicit migration step, not in general version 1
 loading.
 
+ImportBatch manifests are validated separately from committed version 1 state. Validation
+requires a supported manifest version and legal state transition; exact base/candidate
+digests; unique planned entity IDs; complete item outcomes and both order insertions; size
+and digest agreement for every staged/final asset; contained relative paths; and a current
+configuration digest equal to either the recorded base or candidate before automatic
+reconciliation. Anything else enters explicit recovery without configuration mutation or
+automatic deletion.
+
 ## Implementation sequence and issue boundaries
 
 - Q3: preserve malformed input, expose recovery choices, and never overwrite the source.
@@ -521,8 +642,8 @@ loading.
   preserving existing valid Tab IDs and behavior.
 - Later Resource/Placement slice: introduce typed targets, placement ownership, status, and
   independent Display/Kanban orders.
-- Later image/import slices: add managed assets, DeviceBindings, ImportBatch staging, and the
-  M2 routing limits.
+- Later image/import slices: implement the RD-09 recovery journal, managed assets,
+  DeviceBindings, crash-boundary tests, and the M2 routing limits.
 - Later Kanban slice: implement independent column queues and their status-transition rules
   without changing Display order.
 
@@ -540,6 +661,10 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
   review queues without one workflow rearranging the other.
 - Export order remains predictable by reusing Display's row-major sequence until a distinct
   export workflow is justified.
+- Interrupted imports can resume or be abandoned without repeating reviewed work, silently
+  losing partial-failure evidence, or leaving untracked temporary files.
+- Asset-first, configuration-last commit prevents committed Resources from pointing to files
+  that were never durably installed.
 - Managed copies can be handled without endangering originals.
 - Recovery and migration failures cannot silently destroy the last good configuration.
 - Platform-specific launch data has a defined seam without requiring synchronization now.
@@ -549,7 +674,8 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
 - The normalized graph is more complex than the current flat list.
 - Strict validation requires complete characterization tests and explicit migrations.
 - Deterministic legacy IDs require canonicalization rules to remain stable.
-- Durable staging needs careful crash cleanup and privacy-safe manifests.
+- Durable staging requires a versioned state machine, atomic journals, digest reconciliation,
+  idempotent cleanup, bounded startup scanning, and privacy protection equivalent to config.
 - Two persisted order indexes require strict membership/status validation and regression
   tests for every reorder, filter, import, status-change, and Discard path.
 - Resource defaults plus Placement overrides require editing UI to distinguish intentional
@@ -573,6 +699,12 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
   reflows predictably across window widths without changing user order.
 - Add a third independent export order now: rejected because no compelling separate export
   workflow exists; Display order supplies a predictable initial sequence.
+- Keep ImportBatch only in memory: rejected because interruption would lose reviewed routing
+  work and could leave staged assets without a recovery/cleanup journal.
+- Put operational ImportBatch state inside `config.json`: rejected because incomplete imports
+  must not become portable or committed application state.
+- Replace configuration before installing managed assets: rejected because a crash could
+  leave committed Resources pointing to missing content.
 - Delete an unreferenced managed copy during Discard: rejected because Discard must be safe,
   predictable, and recoverable.
 - Store absolute paths in portable Resource state: rejected because they leak local details and
@@ -590,6 +722,9 @@ This ADR intentionally does not decide:
 - Multi-window session ownership, tab tear-off, compact palettes, or always-on-top behavior.
 - Document/application target schemas beyond the initial URL and image contract.
 - Long-term import history, undo, or automatic orphan cleanup.
+- Exact retention prompts for unresolved or quarantined import journals. Crash Resume,
+  Abandon Import, conflict preservation, and safe final cleanup are required and not
+  deferred.
 - A separate export order and the default insertion position for non-positional Kanban status
   commands.
 - Export inclusion and cross-Tab sequencing scope, including selection, active filters,
@@ -610,6 +745,10 @@ This ADR intentionally does not decide:
 - [ ] Independent Display/Kanban ordering, status transitions, migration, and Display-derived
   export order follow the approved rules.
 - [ ] Original, managed copy, Resource, and Placement lifecycles are distinct.
-- [ ] Import commit/cancel/partial-failure rules match the confirmed M2 limits.
+- [ ] Import journals survive every crash boundary; Resume is idempotent; pre-commit Abandon
+  Import changes no committed state; post-commit recovery only finalizes cleanup; conflicts
+  never overwrite config; and no original file is a cleanup target.
+- [ ] Manifest/candidate privacy, bounded scanning, path containment, digest verification,
+  atomic transitions, partial-failure reporting, and the confirmed M2 limits are covered.
 - [ ] Q3, Q4, Q5, and later implementation slices can be issued independently.
 - [ ] No runtime or persisted-schema change is included in this ADR PR.
