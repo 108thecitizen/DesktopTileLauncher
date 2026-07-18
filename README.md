@@ -80,7 +80,7 @@ Review/Approval for release signing: 108thecitizen
 External pull requests are reviewed before merge; only tagged builds from `main` are submitted for release signing.
 
 **Privacy**  
-DesktopTileLauncher does not collect telemetry. Network access is limited to user-initiated actions: opening a tile URL in your browser, adding or editing a URL tile may fetch a site icon through Google's favicon service, and completing URL entry while adding a new tile may make a best-effort request to that destination page to suggest the static page title. The title lookup contacts the destination directly, requests only the top-level document, follows normal redirects, uses the response only when it is HTML/XHTML, executes no JavaScript, loads no subresources, sends no browser cookies or saved credentials, and fails silently. Full URLs, query strings, retrieved titles, and page content are not written to diagnostics. The favicon lookup may make a third-party network request and may send the tile's domain/host to the favicon service. See [Debugging & Crash Reports](#debugging--crash-reports) for local log locations.
+DesktopTileLauncher does not collect telemetry. Network access is limited to user-initiated actions: opening a tile URL in your browser, adding or editing a URL tile may fetch a site icon through Google's favicon service, and completing URL entry while adding a new tile may make a best-effort request to that destination page to suggest the static page title. Explicitly refreshing selected tiles also attempts to contact each selected destination directly for a title and, when a host/domain can be derived, attempts to send that host/domain to Google's favicon service. The title lookup contacts the destination directly, requests only the top-level document, follows normal redirects, uses the response only when it is HTML/XHTML, executes no JavaScript, loads no subresources, sends no browser cookies or saved credentials, and fails silently. Full URLs, query strings, domains, tile names, retrieved titles, icon paths, and page content are not written to refresh diagnostics; only aggregate counts and result categories are recorded. The favicon lookup may make a third-party network request and may send the tile's domain/host to the favicon service. See [Debugging & Crash Reports](#debugging--crash-reports) for local log locations.
 
 **Uninstall**  
 Delete the application folder. Optionally remove per‑user logs/config in the directories listed in the README.
@@ -137,6 +137,41 @@ added and the reviewed list remains available for another attempt. Import accept
 HTTP and HTTPS URLs only and limits a review to 500 nonblank rows and 1 MiB of
 UTF-8 text.
 
+### Refresh tile names and icons
+
+Open the tab you want to work in and choose **Select tiles**. Click individual
+tiles to select a subset, or choose **Select all** to select every tile in the
+active tab. Persistent check indicators and selected styling show the current
+selection, and the selection controls display its count. **Clear selection**
+keeps selection mode open with no tiles selected; **Done** exits selection mode.
+Switching tabs also clears the selection and exits selection mode.
+
+With at least one tile selected, choose **Refresh names and icons**. Before any
+lookup starts, the launcher shows a confirmation with the selected tile count
+and warns that successfully retrieved names and icons replace existing custom
+values. The safe default is to decline. Declining leaves the selection intact
+and performs no lookup, file write, model change, or configuration save.
+
+After confirmation, the launcher uses each selected tile's current URL to look
+up the page title and favicon independently. A retrieved title replaces that
+tile's name, and a retrieved favicon replaces its icon. If either individual
+lookup fails, that existing field is retained exactly; failure of one lookup
+does not prevent the other result from being used. Selection mode prevents URL
+launches, context-menu changes, and tile dragging while selection mode is active.
+When at least one field changes and staging preparation succeeds, the launcher
+attempts one atomic save of a detached configuration. It swaps that configuration
+into the live model and rebuilds the UI only after the save succeeds. A no-change
+result performs no configuration save. Icon staging and configuration persistence
+remain separate filesystem operations.
+
+This explicit refresh is a network action: it attempts to contact each selected
+destination directly for the best-effort page-title request and, when a
+host/domain can be derived, attempts to send that host/domain to Google's
+favicon service. Refresh diagnostics contain aggregate
+counts and result categories only—not URLs, domains, names, retrieved titles,
+icon paths, page content, or exception details that could expose those values.
+The separate **Import URLs** review remains entirely offline as described above.
+
 On Windows, selecting Google Chrome for a tile (or leaving the browser as
 Default when Chrome is the system default) reveals a **Chrome profile**
 dropdown. The list is populated from Chrome's local profile cache and includes
@@ -185,12 +220,16 @@ directory:
 
 Aside from user-initiated URL opens and optional favicon lookups described
 above, adding a URL tile may contact the destination page directly to suggest a
-static page title. That lookup requests only the top-level document, follows
-normal redirects, uses the response only when it is HTML/XHTML, executes no
-JavaScript, loads no subresources, sends no browser cookies or saved
-credentials, fails silently, and does not write full URLs, query strings,
-retrieved titles, or page content to diagnostics. Bulk URL import performs none
-of these lookups and records only aggregate, categorical diagnostics—not URLs,
+static page title. Confirmed refreshes also attempt to contact each selected
+destination for a title and, when a host/domain can be derived, attempt to send
+that host/domain to Google's favicon service. Title lookup requests only the
+top-level document, follows normal
+redirects, uses the response only when it is HTML/XHTML, executes no JavaScript,
+loads no subresources, sends no browser cookies or saved credentials, and fails
+silently. Refresh diagnostics record aggregate counts and result categories
+only—not URLs, query strings, domains, tile names, retrieved titles, icon paths,
+page content, or sensitive exception details. Bulk URL import performs none of
+these lookups and records only aggregate, categorical diagnostics—not URLs,
 tile names, pasted input, or source file paths. The application does not send
 logs or crash data over the network. When something goes wrong, use the *Create
 Crash Bundle* button on the crash dialog to zip the log files and a `crash.json`

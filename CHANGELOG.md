@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### App Behavior
+- Add active-tab tile selection with a selected count, Select all, Clear selection, and Done
+  controls while preventing tile launches, context-menu changes, and dragging during selection.
+- Refresh selected tile names and icons only after overwrite confirmation; title and favicon
+  results apply independently, failed lookups retain their existing fields, and successful
+  changes are prepared in a detached configuration that is saved atomically before the live
+  model is swapped.
+
+### Security/Privacy
+- Disclose that an explicitly confirmed refresh attempts to contact each selected destination for
+  its title and, when a host/domain can be derived, attempts to send that host/domain to Google's
+  favicon service; URL import review remains offline.
+- Keep refresh diagnostics privacy-safe by recording aggregate counts and categories rather than
+  URLs, domains, names, retrieved titles, icon paths, page content, or sensitive exception details.
+
 ## v0.3.5 - 2026-06-17
 
 ### Security/Privacy
