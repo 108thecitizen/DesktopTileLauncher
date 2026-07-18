@@ -35,8 +35,10 @@ This ADR defines the target contract. It does not change the runtime schema or b
    canonical UUID strings.
 4. A Resource owns target identity and managed content. A Placement owns its presentation,
    tab membership, workflow status, and order.
-5. Tab visibility and tab lifecycle are independent. Tile workflow status is separate from
-   both. This preserves today's hidden-tab behavior while reserving tab archive behavior.
+5. Tab visibility and tab lifecycle are independent. The UI derives the simple categories
+   Visible, Hidden, and Archived from those values. Archiving preserves visibility and
+   restoring returns the tab to that prior visible/hidden state. Tile workflow status is
+   separate from all tab state.
 6. Each tab has one canonical placement order. Display filters and Kanban columns are stable
    projections of that order.
 7. Discard removes only a Placement. It never deletes an original file or a managed copy.
@@ -165,10 +167,23 @@ Required fields:
 - `placement_order`: complete canonical ordered list of Placement IDs in the Tab.
 - `extensions`: opaque extension map.
 
-Visibility and lifecycle are independent: hiding controls whether an active tab appears in
-the normal tab bar; archiving is a durable lifecycle state. Archived-tab discovery,
-restoration UI, and delete/trash behavior are deferred. Version 1 migration sets all
-existing tabs to `lifecycle: active` and preserves current hidden/visible state.
+Visibility and lifecycle are independent. The user-facing category is derived as follows:
+
+| Stored lifecycle | Stored visibility | User-facing category | Normal tab bar |
+|---|---|---|---|
+| `active` | `visible` | Visible | Shown |
+| `active` | `hidden` | Hidden | Not shown |
+| `archived` | `visible` | Archived | Not shown |
+| `archived` | `hidden` | Archived | Not shown |
+
+Hide and Show change only `visibility` and apply to active tabs. Archive changes only
+`lifecycle` to `archived`; it does not overwrite `visibility`. Restore changes only
+`lifecycle` to `active`, so a formerly visible tab returns to Visible and a formerly hidden
+tab returns to Hidden. Archived tabs never appear in the normal tab bar, regardless of the
+remembered visibility value.
+
+The exact archived-tab manager and delete/trash UI remain deferred. Version 1 migration
+sets all existing tabs to `lifecycle: active` and preserves current hidden/visible state.
 
 An empty Display filter is valid and intentionally displays no placements. The migration
 default is `["new", "in_use"]`.
@@ -464,7 +479,8 @@ superseding ADR or an explicit amendment reviewed before the dependent code merg
 
 This ADR intentionally does not decide:
 
-- Archived-tab discovery/restoration UI, delete confirmation, trash, or undo.
+- The exact location and presentation of archived-tab discovery and restore controls, plus
+  delete confirmation, trash, or undo. Archive/restore state semantics are decided above.
 - Multiple new tabs per batch or multi-placement import UI.
 - Cross-device synchronization, conflict resolution, or device enrollment.
 - Multi-window session ownership, tab tear-off, compact palettes, or always-on-top behavior.
@@ -477,6 +493,8 @@ This ADR intentionally does not decide:
 - [ ] Version 0 and version 1 boundaries are unambiguous.
 - [ ] Entity identity, ownership, references, and deletion rules are complete.
 - [ ] Existing stable Tab IDs and every current user-visible field are preserved.
+- [ ] Visible, Hidden, Archived, Archive, and Restore follow the approved derived-category
+  and prior-visibility rules.
 - [ ] Display/Kanban ordering is deterministic.
 - [ ] Original, managed copy, Resource, and Placement lifecycles are distinct.
 - [ ] Import commit/cancel/partial-failure rules match the confirmed M2 limits.
