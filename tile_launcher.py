@@ -20,7 +20,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, auto
 from pathlib import Path
-from typing import Callable, Literal, Optional, cast
+from typing import Any, Callable, Literal, Optional, cast
 
 from PySide6.QtCore import (
     QEvent,
@@ -76,6 +76,20 @@ from PySide6.QtWidgets import (
 
 import debug_scaffold
 from config_persistence import atomic_write_text
+from config_recovery import (
+    ConfigLoadFailureCategory,
+    ConfigLoaded,
+    ConfigMissing,
+    ConfigurationLoadError,
+    RecoveryFailed,
+    RecoveryFailureCategory,
+    load_config,
+    preserve_and_reset,
+    recovery_exit_diagnostics,
+    recovery_required_diagnostics,
+    recovery_result_diagnostics,
+    validate_legacy_mapping,
+)
 from debug_scaffold import (
     record_breadcrumb,
     sanitize_launch_command,
@@ -298,41 +312,44 @@ class LauncherConfig:
     window_w: Optional[int] = None
     window_h: Optional[int] = None
 
-    @staticmethod
-    def load() -> "LauncherConfig":
-        if CFG_PATH.exists():
-            data = json.loads(CFG_PATH.read_text(encoding="utf-8"))
-            tiles = [Tile(**t) for t in data.get("tiles", [])]
-            raw_tabs = data.get("tabs") or []
-            tabs: list[str] = []
-            for t in raw_tabs:
-                if isinstance(t, str) and t not in tabs:
-                    tabs.append(t)
-            for tile in tiles:
-                if tile.tab not in tabs:
-                    tabs.append(tile.tab)
-            hidden_raw = data.get("hidden_tabs") or []
-            hidden_tabs = [t for t in hidden_raw if isinstance(t, str)]
-            cfg = LauncherConfig(
-                title=data.get("title", "Launcher"),
-                columns=data.get("columns", 5),
-                tiles=tiles,
-                tabs=tabs,
-                hidden_tabs=hidden_tabs,
-                auto_fit=data.get("auto_fit", True),
-                window_x=data.get("window_x"),
-                window_y=data.get("window_y"),
-                window_w=data.get("window_w"),
-                window_h=data.get("window_h"),
-            )
-            enforce_tab_invariants(
-                cfg,
-                raw_tab_ids=data.get("tab_ids"),
-                raw_tab_order=data.get("tab_order"),
-            )
-            return cfg
-        # first run – create a friendly default
-        cfg = LauncherConfig(
+    @classmethod
+    def from_legacy_mapping(cls, data: dict[str, object]) -> "LauncherConfig":
+        """Construct the current unversioned model with its existing behavior."""
+        legacy = cast(dict[str, Any], data)
+        tiles = [Tile(**tile) for tile in legacy.get("tiles", [])]
+        raw_tabs = legacy.get("tabs") or []
+        tabs: list[str] = []
+        for tab in raw_tabs:
+            if isinstance(tab, str) and tab not in tabs:
+                tabs.append(tab)
+        for tile in tiles:
+            if tile.tab not in tabs:
+                tabs.append(tile.tab)
+        hidden_raw = legacy.get("hidden_tabs") or []
+        hidden_tabs = [tab for tab in hidden_raw if isinstance(tab, str)]
+        cfg = cls(
+            title=legacy.get("title", "Launcher"),
+            columns=legacy.get("columns", 5),
+            tiles=tiles,
+            tabs=tabs,
+            hidden_tabs=hidden_tabs,
+            auto_fit=legacy.get("auto_fit", True),
+            window_x=legacy.get("window_x"),
+            window_y=legacy.get("window_y"),
+            window_w=legacy.get("window_w"),
+            window_h=legacy.get("window_h"),
+        )
+        enforce_tab_invariants(
+            cfg,
+            raw_tab_ids=legacy.get("tab_ids"),
+            raw_tab_order=legacy.get("tab_order"),
+        )
+        return cfg
+
+    @classmethod
+    def first_run(cls) -> "LauncherConfig":
+        """Return the single friendly first-run configuration definition."""
+        cfg = cls(
             title="My Launcher",
             columns=5,
             tiles=[
@@ -345,10 +362,21 @@ class LauncherConfig:
             auto_fit=True,
         )
         enforce_tab_invariants(cfg)
-        cfg.save()
         return cfg
 
-    def save(self) -> None:
+    @staticmethod
+    def load() -> "LauncherConfig":
+        result = load_config(CFG_PATH, _construct_legacy_configuration)
+        if isinstance(result, ConfigMissing):
+            cfg = LauncherConfig.first_run()
+            cfg.save()
+            return cfg
+        if isinstance(result, ConfigLoaded):
+            return result.value
+        raise ConfigurationLoadError(result.category, result.snapshot)
+
+    def serialize(self) -> str:
+        """Serialize using the existing unversioned schema and formatting."""
         enforce_tab_invariants(self)
         tiles = []
         for t in self.tiles:
@@ -370,8 +398,15 @@ class LauncherConfig:
             "window_w": self.window_w,
             "window_h": self.window_h,
         }
-        payload = json.dumps(data, indent=2)
-        atomic_write_text(CFG_PATH, payload)
+        return json.dumps(data, indent=2)
+
+    def save(self) -> None:
+        atomic_write_text(CFG_PATH, self.serialize())
+
+
+def _construct_legacy_configuration(data: dict[str, object]) -> LauncherConfig:
+    validate_legacy_mapping(data)
+    return LauncherConfig.from_legacy_mapping(data)
 
 
 def _tab_order_state(cfg: LauncherConfig) -> TabOrderState:
@@ -1104,11 +1139,9 @@ class _ActiveRefresh:
 
 
 class Main(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, config: LauncherConfig) -> None:
         super().__init__()
-        self.cfg = LauncherConfig.load()
-        self._enforce_tab_invariants()
-        self.cfg.save()
+        self.cfg = config
         self._fit_guard = False
         self._rebuilding = False
         self._closing = False
@@ -2716,9 +2749,146 @@ class Main(QMainWindow):
         raise RuntimeError("Test exception")
 
 
-if __name__ == "__main__":
+class _RecoveryChoice(Enum):
+    EXIT = auto()
+    PRESERVE_AND_RESET = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class _StartupReady:
+    config: LauncherConfig = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _StartupExit:
+    exit_code: int
+
+
+_LOAD_FAILURE_MESSAGES: dict[ConfigLoadFailureCategory, str] = {
+    ConfigLoadFailureCategory.FILE_READ_FAILURE: (
+        "The saved configuration could not be read safely."
+    ),
+    ConfigLoadFailureCategory.SIZE_LIMIT_EXCEEDED: (
+        "The saved configuration exceeds the 4 MiB parsing safety limit."
+    ),
+    ConfigLoadFailureCategory.INVALID_UTF8: (
+        "The saved configuration is not valid UTF-8 text."
+    ),
+    ConfigLoadFailureCategory.MALFORMED_JSON: (
+        "The saved configuration contains malformed JSON."
+    ),
+    ConfigLoadFailureCategory.NON_OBJECT_ROOT: (
+        "The saved configuration does not contain a JSON object."
+    ),
+    ConfigLoadFailureCategory.LEGACY_CONSTRUCTION_FAILURE: (
+        "The saved configuration is incompatible with the current format."
+    ),
+}
+
+_RECOVERY_FAILURE_MESSAGES: dict[RecoveryFailureCategory, str] = {
+    RecoveryFailureCategory.SOURCE_UNAVAILABLE: (
+        "The saved configuration could not be safely reopened for preservation."
+    ),
+    RecoveryFailureCategory.SOURCE_CHANGED: (
+        "The saved configuration changed after it was inspected. No reset was performed."
+    ),
+    RecoveryFailureCategory.RECOVERY_DIRECTORY_FAILURE: (
+        "The private recovery location could not be prepared safely."
+    ),
+    RecoveryFailureCategory.RECOVERY_COPY_FAILURE: (
+        "A complete recovery copy could not be written."
+    ),
+    RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE: (
+        "The recovery copy could not be verified."
+    ),
+    RecoveryFailureCategory.RESET_FAILURE: (
+        "The preserved configuration could not be atomically reset."
+    ),
+}
+
+
+def _prompt_config_recovery(
+    category: ConfigLoadFailureCategory,
+) -> _RecoveryChoice:
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle("DesktopTileLauncher")
+    box.setText("The saved configuration could not be loaded.")
+    box.setInformativeText(
+        f"{_LOAD_FAILURE_MESSAGES[category]} "
+        "Exit leaves it unchanged. Preserve and Reset first keeps an exact recovery copy."
+    )
+    exit_button = box.addButton("Exit", QMessageBox.ButtonRole.RejectRole)
+    reset_button = box.addButton(
+        "Preserve and Reset",
+        QMessageBox.ButtonRole.DestructiveRole,
+    )
+    box.setDefaultButton(exit_button)
+    box.setEscapeButton(exit_button)
+    exit_button.setFocus()
+    box.exec()
+    if box.clickedButton() is reset_button:
+        return _RecoveryChoice.PRESERVE_AND_RESET
+    return _RecoveryChoice.EXIT
+
+
+def _show_recovery_failure(category: RecoveryFailureCategory) -> None:
+    QMessageBox.critical(
+        None,
+        "DesktopTileLauncher",
+        f"{_RECOVERY_FAILURE_MESSAGES[category]} The application will exit.",
+    )
+
+
+def _resolve_startup_configuration() -> _StartupReady | _StartupExit:
+    result = load_config(CFG_PATH, _construct_legacy_configuration)
+    if isinstance(result, ConfigMissing):
+        config = LauncherConfig.first_run()
+        config.save()
+        return _StartupReady(config)
+    if isinstance(result, ConfigLoaded):
+        config = result.value
+        config.save()
+        return _StartupReady(config)
+
+    record_breadcrumb(
+        "config_recovery_required",
+        **recovery_required_diagnostics(result.category),
+    )
+    if _prompt_config_recovery(result.category) is _RecoveryChoice.EXIT:
+        record_breadcrumb(
+            "config_recovery_exit",
+            **recovery_exit_diagnostics(result.category),
+        )
+        return _StartupExit(0)
+
+    config = LauncherConfig.first_run()
+    recovery = preserve_and_reset(CFG_PATH, result.snapshot, config.serialize())
+    if isinstance(recovery, RecoveryFailed):
+        record_breadcrumb(
+            "config_recovery_failed",
+            **recovery_result_diagnostics(recovery),
+        )
+        _show_recovery_failure(recovery.category)
+        return _StartupExit(1)
+
+    record_breadcrumb(
+        "config_recovery_succeeded",
+        **recovery_result_diagnostics(recovery),
+    )
+    return _StartupReady(config)
+
+
+def main() -> int:
     app = QApplication(sys.argv)
     debug_scaffold.install_debug_scaffold(app, app_name="DesktopTileLauncher")
-    mw = Main()
+    startup = _resolve_startup_configuration()
+    if isinstance(startup, _StartupExit):
+        return startup.exit_code
+    mw = Main(startup.config)
     mw.show()
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

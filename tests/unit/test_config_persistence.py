@@ -79,3 +79,58 @@ def test_replace_failure_preserves_original_and_removes_temporary_file(
     assert not observed_temporary_paths[0].exists()
     assert config_path.read_bytes() == original
     assert set(tmp_path.iterdir()) == {config_path}
+
+
+def test_before_replace_runs_after_sync_and_immediately_before_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("original", encoding="utf-8")
+    events: list[str] = []
+    real_write_and_sync = config_persistence._write_and_sync
+    real_replace = config_persistence.os.replace
+
+    def tracked_write_and_sync(
+        stream: config_persistence._SyncableTextStream,
+        text: str,
+    ) -> None:
+        events.append("write_and_sync")
+        real_write_and_sync(stream, text)
+
+    def guard() -> None:
+        events.append("guard")
+        assert config_path.read_text(encoding="utf-8") == "original"  # nosec B101
+
+    def tracked_replace(source: Path, destination: Path) -> None:
+        events.append("replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(config_persistence, "_write_and_sync", tracked_write_and_sync)
+    monkeypatch.setattr(config_persistence.os, "replace", tracked_replace)
+
+    atomic_write_text(config_path, "replacement", before_replace=guard)
+
+    assert events == ["write_and_sync", "guard", "replace"]  # nosec B101
+    assert config_path.read_text(encoding="utf-8") == "replacement"  # nosec B101
+    assert set(tmp_path.iterdir()) == {config_path}  # nosec B101
+
+
+def test_before_replace_failure_preserves_original_and_removes_temporary_file(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    original = b"original"
+    config_path.write_bytes(original)
+
+    def reject_replace() -> None:
+        raise RuntimeError("synthetic guard rejection")
+
+    with pytest.raises(RuntimeError, match="synthetic guard rejection"):
+        atomic_write_text(
+            config_path,
+            "replacement",
+            before_replace=reject_replace,
+        )
+
+    assert config_path.read_bytes() == original  # nosec B101
+    assert set(tmp_path.iterdir()) == {config_path}  # nosec B101

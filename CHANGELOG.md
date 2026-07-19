@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### App Behavior
+- Detect unreadable or corrupt configuration at startup and offer a safe default Exit or an
+  explicit preserve-and-reset flow before the launcher mutates configuration state.
 - Add active-tab tile selection with a selected count, Select all, Clear selection, and Done
   controls while preventing tile launches, context-menu changes, and dragging during selection.
 - Refresh selected tile names and icons only after overwrite confirmation; title and favicon
@@ -11,6 +13,8 @@
   model is swapped.
 
 ### Security/Privacy
+- Preserve and verify exact corrupt-configuration bytes before reset, keep verified copies in a
+  private recovery location, and record only curated failure categories and integer counts.
 - Disclose that an explicitly confirmed refresh attempts to contact each selected destination for
   its title and, when a host/domain can be derived, attempts to send that host/domain to Google's
   favicon service; URL import review remains offline.
