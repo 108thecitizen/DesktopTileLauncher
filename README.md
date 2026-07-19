@@ -112,6 +112,21 @@ Prior releases were MIT; the text is preserved in [LICENSE-MIT](./LICENSE-MIT).
 SPDX-License-Identifier: Apache-2.0
 
 ## Usage
+
+### Configuration recovery
+
+DesktopTileLauncher reads at most 4 MiB of `config.json` for normal UTF-8 and
+JSON parsing. If an existing configuration cannot be loaded safely, startup
+offers exactly **Exit** or **Preserve and Reset**. Exit is the safe default and
+does not change the configuration or create a recovery copy.
+
+Preserve and Reset first streams the original bytes into a private per-user
+recovery directory beside, but not inside, the launcher icon directory. The
+copy is independently verified byte-for-byte before the normal first-run
+configuration is installed atomically. A reset is not attempted when copying,
+verification, or the final source-change check fails. Verified recovery copies
+are never overwritten or deleted automatically.
+
 ### Add tiles
 
 - Use the **Add** button on the toolbar.
