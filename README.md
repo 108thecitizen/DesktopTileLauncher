@@ -113,12 +113,25 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Usage
 
-### Configuration recovery
+### Configuration versions and recovery
 
 DesktopTileLauncher reads at most 4 MiB of `config.json` for normal UTF-8 and
-JSON parsing. If an existing configuration cannot be loaded safely, startup
-offers exactly **Exit** or **Preserve and Reset**. Exit is the safe default and
-does not change the configuration or create a recovery copy.
+JSON parsing. Production remains on the existing implicit, unversioned legacy
+v0 format: a configuration without `schema_version` is constructed, normalized,
+and saved using the existing behavior. The production migration registry has no
+registered steps, no v0-to-v1 migration runs, and the application does not emit
+`schema_version` 1.
+
+An explicit `schema_version` of 0 is invalid. A malformed version value or any
+positive explicit version, including version 1, receives fixed **Exit**-only
+handling before legacy construction, normalization, or saving. Migration
+failures also use fixed Exit-only handling. These version and migration cases
+never offer Preserve and Reset.
+
+The existing recovery choices remain unchanged for the established corrupt or
+unreadable configuration categories. Startup offers exactly **Exit** or
+**Preserve and Reset**. Exit is the safe default and does not change the
+configuration or create a recovery copy.
 
 Preserve and Reset first streams the original bytes into a private per-user
 recovery directory beside, but not inside, the launcher icon directory. The
@@ -126,6 +139,45 @@ copy is independently verified byte-for-byte before the normal first-run
 configuration is installed atomically. A reset is not attempted when copying,
 verification, or the final source-change check fails. Verified recovery copies
 are never overwritten or deleted automatically.
+
+The Qt-free migration harness is ready for future consecutive, registered
+schema steps. It validates the source before preservation; a source-validation
+rejection creates no recovery artifact and performs no write. When at least one
+step will run, the harness preserves and independently verifies one exact
+recovery copy before the first step, validates every detached intermediate and
+target document, and writes deterministic UTF-8 JSON through a guarded atomic
+replacement. Candidate JSON preserves non-ASCII text, sorts keys, uses two-space
+indentation and LF line endings, rejects non-finite numbers, and has no trailing
+newline. The harness reverifies both the source and recovery copy immediately
+before replacement, then reloads and validates the installed candidate.
+
+After replacement, the harness must successfully reload the exact candidate
+bytes before treating the installed file as transaction-owned. Retention and
+rollback occur only when that exact installed candidate is first proven and its
+post-write target validation then fails. With ownership still proven, the
+harness retains the failed candidate privately, reverifies the permanent
+recovery artifact, restores its exact original bytes atomically, and verifies
+the rollback.
+
+A reload failure or exact-byte mismatch leaves ownership unproven, and a later
+live-file change revokes ownership. These cases receive fixed Exit-only,
+fail-closed handling. The harness performs no retention or rollback over an
+unproven live path, so it does not overwrite possibly external bytes. A rollback
+that cannot be completed or verified also fails closed. Published recovery
+copies and failed candidates are private, never overwritten, and never deleted
+automatically.
+
+The normal implicit-v0 startup save has a separate overwrite guard. Immediately
+before installing the normalized legacy text, the application verifies that the
+source still matches the bytes classified at startup. If another process changed
+or replaced the file, the save is cancelled and the application exits without
+overwriting the newer source.
+
+Migration recovery is not journaled. A process interruption after an atomic
+candidate replacement but before post-write verification or rollback can leave
+the complete candidate installed. On the next launch, DesktopTileLauncher
+classifies and validates that live file normally; it does not guess which
+recovery artifact to restore or automatically select one.
 
 ### Add tiles
 

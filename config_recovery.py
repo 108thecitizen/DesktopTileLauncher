@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Final, Generic, Protocol, TypeAlias, TypeVar, cast
+from typing import Final, Generic, Literal, Protocol, TypeAlias, TypeVar, cast
 
 from config_persistence import atomic_write_text
 
@@ -65,6 +65,15 @@ class RecoveryFailureCategory(StrEnum):
     RECOVERY_COPY_FAILURE = "recovery_copy_failure"
     RECOVERY_VERIFICATION_FAILURE = "recovery_verification_failure"
     RESET_FAILURE = "reset_failure"
+
+
+class CandidateRetentionFailureCategory(StrEnum):
+    """Privacy-safe reasons an owned failed candidate could not be retained."""
+
+    SOURCE_CHANGED = "source_changed"
+    RECOVERY_DIRECTORY_FAILURE = "recovery_directory_failure"
+    CANDIDATE_COPY_FAILURE = "candidate_copy_failure"
+    CANDIDATE_VERIFICATION_FAILURE = "candidate_verification_failure"
 
 
 class LegacyConstructionFailure(Exception):
@@ -150,7 +159,7 @@ class _FileFingerprint:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class SourceSnapshot:
-    """Private evidence identifying the bytes rejected during bounded loading."""
+    """Private evidence recorded by a successful or rejected bounded raw load."""
 
     path_fingerprint: _FileFingerprint = field(repr=False)
     target_fingerprint: _FileFingerprint = field(repr=False)
@@ -159,6 +168,15 @@ class SourceSnapshot:
     evidence_sha256: bytes = field(repr=False)
     evidence_is_complete: bool
     source_is_redirected: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RawConfigLoaded:
+    """A bounded JSON object and the exact source evidence used to parse it."""
+
+    mapping: dict[str, object] = field(repr=False)
+    source_bytes: bytes = field(repr=False)
+    snapshot: SourceSnapshot = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +200,9 @@ class ConfigRecoveryRequired:
 
 
 ConfigLoadResult: TypeAlias = ConfigMissing | ConfigLoaded[T] | ConfigRecoveryRequired
+RawConfigLoadResult: TypeAlias = (
+    ConfigMissing | RawConfigLoaded | ConfigRecoveryRequired
+)
 
 
 class ConfigurationLoadError(Exception):
@@ -234,6 +255,91 @@ class _VerifiedCopy:
     path: Path = field(repr=False)
     byte_count: int
     sha256: bytes = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class PreservedSource:
+    """Opaque authority for one independently verified original recovery copy."""
+
+    _source_path: Path = field(repr=False)
+    _source_snapshot: SourceSnapshot = field(repr=False)
+    _artifact_path: Path = field(repr=False)
+    _artifact_fingerprint: _FileFingerprint = field(repr=False)
+    _byte_count: int = field(repr=False)
+    _sha256: bytes = field(repr=False)
+
+    def __new__(cls) -> PreservedSource:
+        raise TypeError("PreservedSource handles are created by preserve_source")
+
+
+def _new_preserved_source(
+    source_path: Path,
+    source_snapshot: SourceSnapshot,
+    artifact_path: Path,
+    artifact_fingerprint: _FileFingerprint,
+    byte_count: int,
+    sha256: bytes,
+) -> PreservedSource:
+    preserved = object.__new__(PreservedSource)
+    object.__setattr__(preserved, "_source_path", source_path)
+    object.__setattr__(preserved, "_source_snapshot", source_snapshot)
+    object.__setattr__(preserved, "_artifact_path", artifact_path)
+    object.__setattr__(preserved, "_artifact_fingerprint", artifact_fingerprint)
+    object.__setattr__(preserved, "_byte_count", byte_count)
+    object.__setattr__(preserved, "_sha256", sha256)
+    return preserved
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePreserved:
+    source: PreservedSource = field(repr=False)
+    recovery_copy_count: Literal[1] = 1
+
+
+@dataclass(frozen=True, slots=True)
+class SourcePreservationFailed:
+    category: RecoveryFailureCategory
+    recovery_copy_count: Literal[0, 1] = 0
+
+
+PreserveSourceResult: TypeAlias = SourcePreserved | SourcePreservationFailed
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryVerificationSucceeded:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryVerificationFailed:
+    category: RecoveryFailureCategory
+
+
+RecoveryVerificationResult: TypeAlias = (
+    RecoveryVerificationSucceeded | RecoveryVerificationFailed
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PreservedBytesRead:
+    data: bytes = field(repr=False)
+
+
+PreservedBytesResult: TypeAlias = PreservedBytesRead | RecoveryVerificationFailed
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRetained:
+    failed_candidate_copy_count: Literal[1] = 1
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateRetentionFailed:
+    category: CandidateRetentionFailureCategory
+    failed_candidate_copy_count: Literal[0, 1] = 0
+
+
+CandidateRetentionResult: TypeAlias = CandidateRetained | CandidateRetentionFailed
 
 
 class _FileSafetyFailure(Exception):
@@ -368,13 +474,12 @@ def _source_still_matches(path: Path, opened: _OpenedSource) -> bool:
         return False
 
 
-def load_config(
+def load_raw_config(
     path: Path,
-    constructor: Callable[[dict[str, object]], T],
     *,
     max_bytes: int = MAX_CONFIG_BYTES,
-) -> ConfigLoadResult[T]:
-    """Read and construct an existing configuration without modifying it."""
+) -> RawConfigLoadResult:
+    """Read one bounded JSON object and retain its exact source evidence."""
 
     if not 0 < max_bytes <= MAX_CONFIG_BYTES:
         raise ValueError(f"max_bytes must be between 1 and {MAX_CONFIG_BYTES}")
@@ -432,20 +537,40 @@ def load_config(
             ConfigLoadFailureCategory.NON_OBJECT_ROOT, snapshot
         )
 
+    return RawConfigLoaded(cast(dict[str, object], parsed), raw, snapshot)
+
+
+def load_config(
+    path: Path,
+    constructor: Callable[[dict[str, object]], T],
+    *,
+    max_bytes: int = MAX_CONFIG_BYTES,
+) -> ConfigLoadResult[T]:
+    """Read and construct an existing configuration without modifying it."""
+
+    raw_result = load_raw_config(path, max_bytes=max_bytes)
+    if not isinstance(raw_result, RawConfigLoaded):
+        return raw_result
+
     try:
-        value = constructor(cast(dict[str, object], parsed))
+        value = constructor(raw_result.mapping)
     except LegacyConstructionFailure:
         return ConfigRecoveryRequired(
             ConfigLoadFailureCategory.LEGACY_CONSTRUCTION_FAILURE,
-            snapshot,
+            raw_result.snapshot,
         )
     return ConfigLoaded(value)
 
 
-def _snapshot_matches_opened(snapshot: SourceSnapshot, opened: _OpenedSource) -> bool:
+def _snapshot_matches_opened(
+    snapshot: SourceSnapshot,
+    opened: _OpenedSource,
+    *,
+    allow_redirected: bool,
+) -> bool:
     return (
-        not snapshot.source_is_redirected
-        and not opened.redirected
+        snapshot.source_is_redirected == opened.redirected
+        and (allow_redirected or not opened.redirected)
         and opened.path_fingerprint == snapshot.path_fingerprint
         and opened.target_fingerprint == snapshot.target_fingerprint
         and opened.content_fingerprint == snapshot.content_fingerprint
@@ -465,10 +590,19 @@ def _read_evidence(descriptor: int, byte_count: int) -> bytes:
     return bytes(evidence)
 
 
-def _open_matching_source(path: Path, snapshot: SourceSnapshot) -> _OpenedSource:
+def _open_matching_source(
+    path: Path,
+    snapshot: SourceSnapshot,
+    *,
+    allow_redirected: bool = False,
+) -> _OpenedSource:
     opened = _open_source(path)
     try:
-        if not _snapshot_matches_opened(snapshot, opened):
+        if not _snapshot_matches_opened(
+            snapshot,
+            opened,
+            allow_redirected=allow_redirected,
+        ):
             raise _SourceChanged
         evidence = _read_evidence(opened.descriptor, snapshot.evidence_byte_count)
         if len(evidence) != snapshot.evidence_byte_count:
@@ -619,9 +753,11 @@ def _publish_verified_copy(
     recovery_directory: Path,
     expected_count: int,
     expected_digest: bytes,
+    *,
+    final_suffix: Literal["recovery", "failed-candidate"] = "recovery",
 ) -> _VerifiedCopy:
     for _attempt in range(_MAX_NAME_ATTEMPTS):
-        final_path = recovery_directory / f"config-{_safe_token()}.recovery"
+        final_path = recovery_directory / f"config-{_safe_token()}.{final_suffix}"
         if final_path.parent != recovery_directory:
             raise _FileSafetyFailure
         try:
@@ -641,7 +777,7 @@ def _verify_source_and_copy(
     config_path: Path,
     snapshot: SourceSnapshot,
     verified: _VerifiedCopy,
-) -> None:
+) -> _FileFingerprint:
     try:
         opened = _open_matching_source(config_path, snapshot)
         try:
@@ -666,7 +802,7 @@ def _verify_source_and_copy(
         raise _GuardFailure(RecoveryFailureCategory.SOURCE_CHANGED) from None
 
     try:
-        _copy_fingerprint, copy_count, copy_digest = _hash_stable_path(verified.path)
+        copy_fingerprint, copy_count, copy_digest = _hash_stable_path(verified.path)
         if copy_count != verified.byte_count or copy_digest != verified.sha256:
             raise _GuardFailure(RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE)
     except _GuardFailure:
@@ -675,33 +811,31 @@ def _verify_source_and_copy(
         raise _GuardFailure(
             RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
         ) from None
+    return copy_fingerprint
 
 
-def preserve_and_reset(
+def _preserve_source_with_suffix(
     config_path: Path,
-    snapshot: SourceSnapshot | None,
-    replacement_text: str,
-) -> RecoveryResult:
-    """Preserve the detected source, verify it, then atomically install reset text."""
-
-    if snapshot is None or snapshot.source_is_redirected:
-        return RecoveryFailed(RecoveryFailureCategory.SOURCE_UNAVAILABLE)
-
+    snapshot: SourceSnapshot,
+    *,
+    final_suffix: Literal["recovery", "failed-candidate"],
+) -> PreserveSourceResult:
     try:
         source = _open_matching_source(config_path, snapshot)
     except (OSError, _FileSafetyFailure, _SourceChanged):
-        return RecoveryFailed(RecoveryFailureCategory.SOURCE_CHANGED)
+        return SourcePreservationFailed(RecoveryFailureCategory.SOURCE_CHANGED)
 
     staging_path: Path | None = None
     try:
-        copy_outcome: tuple[Path, Path, int, bytes] | RecoveryFailed = RecoveryFailed(
-            RecoveryFailureCategory.RECOVERY_COPY_FAILURE
+        copy_outcome: tuple[Path, Path, int, bytes] | SourcePreservationFailed
+        copy_outcome = SourcePreservationFailed(
+            RecoveryFailureCategory.RECOVERY_COPY_FAILURE,
         )
         try:
             try:
                 recovery_directory = _resolved_recovery_directory(config_path)
             except (OSError, RuntimeError, _FileSafetyFailure):
-                copy_outcome = RecoveryFailed(
+                copy_outcome = SourcePreservationFailed(
                     RecoveryFailureCategory.RECOVERY_DIRECTORY_FAILURE
                 )
             else:
@@ -715,11 +849,11 @@ def preserve_and_reset(
                         destination_descriptor,
                     )
                 except _SourceChanged:
-                    copy_outcome = RecoveryFailed(
+                    copy_outcome = SourcePreservationFailed(
                         RecoveryFailureCategory.SOURCE_CHANGED
                     )
                 except (OSError, _FileSafetyFailure):
-                    copy_outcome = RecoveryFailed(
+                    copy_outcome = SourcePreservationFailed(
                         RecoveryFailureCategory.RECOVERY_COPY_FAILURE
                     )
                 else:
@@ -734,11 +868,11 @@ def preserve_and_reset(
                 os.close(source.descriptor)
             except OSError:
                 if isinstance(copy_outcome, tuple):
-                    copy_outcome = RecoveryFailed(
+                    copy_outcome = SourcePreservationFailed(
                         RecoveryFailureCategory.RECOVERY_COPY_FAILURE
                     )
 
-        if isinstance(copy_outcome, RecoveryFailed):
+        if isinstance(copy_outcome, SourcePreservationFailed):
             return copy_outcome
         staged_path, recovery_directory, byte_count, digest = copy_outcome
 
@@ -747,9 +881,13 @@ def preserve_and_reset(
                 staged_path
             )
         except (OSError, _FileSafetyFailure, _SourceChanged):
-            return RecoveryFailed(RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE)
+            return SourcePreservationFailed(
+                RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+            )
         if verified_count != byte_count or verified_digest != digest:
-            return RecoveryFailed(RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE)
+            return SourcePreservationFailed(
+                RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+            )
 
         try:
             verified = _publish_verified_copy(
@@ -757,28 +895,249 @@ def preserve_and_reset(
                 recovery_directory,
                 byte_count,
                 digest,
+                final_suffix=final_suffix,
             )
         except (OSError, _FileSafetyFailure, _SourceChanged):
-            return RecoveryFailed(RecoveryFailureCategory.RECOVERY_COPY_FAILURE)
+            return SourcePreservationFailed(
+                RecoveryFailureCategory.RECOVERY_COPY_FAILURE
+            )
 
         _cleanup_staging(staged_path)
         staging_path = None
 
-        def guard() -> None:
-            _verify_source_and_copy(config_path, snapshot, verified)
-
         try:
-            atomic_write_text(config_path, replacement_text, before_replace=guard)
+            artifact_fingerprint = _verify_source_and_copy(
+                config_path,
+                snapshot,
+                verified,
+            )
         except _GuardFailure as failure:
-            return RecoveryFailed(
+            return SourcePreservationFailed(
                 failure.category,
                 recovery_copy_count=1,
             )
-        except OSError:
-            return RecoveryFailed(
-                RecoveryFailureCategory.RESET_FAILURE,
-                recovery_copy_count=1,
-            )
-        return RecoverySucceeded()
+
+        preserved = _new_preserved_source(
+            config_path,
+            snapshot,
+            verified.path,
+            artifact_fingerprint,
+            verified.byte_count,
+            verified.sha256,
+        )
+        return SourcePreserved(preserved)
     finally:
         _cleanup_staging(staging_path)
+
+
+def preserve_source(
+    config_path: Path,
+    snapshot: SourceSnapshot | None,
+) -> PreserveSourceResult:
+    """Publish and independently verify one permanent copy of an original source."""
+
+    if snapshot is None or snapshot.source_is_redirected:
+        return SourcePreservationFailed(RecoveryFailureCategory.SOURCE_UNAVAILABLE)
+    return _preserve_source_with_suffix(
+        config_path,
+        snapshot,
+        final_suffix="recovery",
+    )
+
+
+def _verified_copy(preserved: PreservedSource) -> _VerifiedCopy:
+    return _VerifiedCopy(
+        preserved._artifact_path,
+        preserved._byte_count,
+        preserved._sha256,
+    )
+
+
+def reverify_preserved_source(
+    preserved: PreservedSource,
+) -> RecoveryVerificationResult:
+    """Reverify the original live source first, then its permanent recovery copy."""
+
+    try:
+        artifact_fingerprint = _verify_source_and_copy(
+            preserved._source_path,
+            preserved._source_snapshot,
+            _verified_copy(preserved),
+        )
+        if artifact_fingerprint != preserved._artifact_fingerprint:
+            raise _GuardFailure(RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE)
+    except _GuardFailure as failure:
+        return RecoveryVerificationFailed(failure.category)
+    return RecoveryVerificationSucceeded()
+
+
+def verify_preserved_artifact(
+    preserved: PreservedSource,
+) -> RecoveryVerificationResult:
+    """Reverify a permanent recovery artifact without consulting the replaced source."""
+
+    try:
+        fingerprint, byte_count, digest = _hash_stable_path(preserved._artifact_path)
+    except (OSError, _FileSafetyFailure, _SourceChanged):
+        return RecoveryVerificationFailed(
+            RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+        )
+    if (
+        fingerprint != preserved._artifact_fingerprint
+        or byte_count != preserved._byte_count
+        or digest != preserved._sha256
+    ):
+        return RecoveryVerificationFailed(
+            RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+        )
+    return RecoveryVerificationSucceeded()
+
+
+def read_preserved_bytes(preserved: PreservedSource) -> PreservedBytesResult:
+    """Read exact rollback bytes from a stable, independently verified artifact."""
+
+    if preserved._byte_count > MAX_CONFIG_BYTES:
+        return RecoveryVerificationFailed(
+            RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+        )
+
+    try:
+        opened = _open_source(preserved._artifact_path)
+        try:
+            if (
+                opened.redirected
+                or opened.content_fingerprint != preserved._artifact_fingerprint
+            ):
+                raise _SourceChanged
+            data = _read_evidence(opened.descriptor, preserved._byte_count)
+            if len(data) != preserved._byte_count or os.read(opened.descriptor, 1):
+                raise _SourceChanged
+            if not _source_still_matches(preserved._artifact_path, opened):
+                raise _SourceChanged
+        finally:
+            os.close(opened.descriptor)
+    except (OSError, _FileSafetyFailure, _SourceChanged):
+        return RecoveryVerificationFailed(
+            RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+        )
+
+    if hashlib.sha256(data).digest() != preserved._sha256:
+        return RecoveryVerificationFailed(
+            RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+        )
+    return PreservedBytesRead(data)
+
+
+def reverify_source_bytes(
+    path: Path,
+    snapshot: SourceSnapshot,
+    expected_bytes: bytes,
+) -> RecoveryVerificationResult:
+    """Prove that a path still contains the complete bytes represented by a snapshot.
+
+    Unchanged redirected sources are accepted for guarded legacy normalization writes.
+    Preservation itself continues to reject every redirected source.
+    """
+
+    if (
+        not snapshot.evidence_is_complete
+        or len(expected_bytes) != snapshot.evidence_byte_count
+        or hashlib.sha256(expected_bytes).digest() != snapshot.evidence_sha256
+    ):
+        return RecoveryVerificationFailed(RecoveryFailureCategory.SOURCE_CHANGED)
+
+    try:
+        opened = _open_matching_source(path, snapshot, allow_redirected=True)
+        try:
+            actual = _read_evidence(opened.descriptor, len(expected_bytes))
+            if actual != expected_bytes or os.read(opened.descriptor, 1):
+                raise _SourceChanged
+            if not _source_still_matches(path, opened):
+                raise _SourceChanged
+        finally:
+            os.close(opened.descriptor)
+    except (OSError, _FileSafetyFailure, _SourceChanged):
+        return RecoveryVerificationFailed(RecoveryFailureCategory.SOURCE_CHANGED)
+    return RecoveryVerificationSucceeded()
+
+
+def _candidate_failure_category(
+    category: RecoveryFailureCategory,
+) -> CandidateRetentionFailureCategory:
+    if category in (
+        RecoveryFailureCategory.SOURCE_UNAVAILABLE,
+        RecoveryFailureCategory.SOURCE_CHANGED,
+    ):
+        return CandidateRetentionFailureCategory.SOURCE_CHANGED
+    if category is RecoveryFailureCategory.RECOVERY_DIRECTORY_FAILURE:
+        return CandidateRetentionFailureCategory.RECOVERY_DIRECTORY_FAILURE
+    if category is RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE:
+        return CandidateRetentionFailureCategory.CANDIDATE_VERIFICATION_FAILURE
+    return CandidateRetentionFailureCategory.CANDIDATE_COPY_FAILURE
+
+
+def retain_failed_candidate(
+    config_path: Path,
+    candidate_snapshot: SourceSnapshot,
+    expected_candidate_bytes: bytes,
+) -> CandidateRetentionResult:
+    """Retain only the exact failed candidate proven to belong to this transaction."""
+
+    if candidate_snapshot.source_is_redirected or isinstance(
+        reverify_source_bytes(
+            config_path,
+            candidate_snapshot,
+            expected_candidate_bytes,
+        ),
+        RecoveryVerificationFailed,
+    ):
+        return CandidateRetentionFailed(
+            CandidateRetentionFailureCategory.SOURCE_CHANGED
+        )
+
+    retained = _preserve_source_with_suffix(
+        config_path,
+        candidate_snapshot,
+        final_suffix="failed-candidate",
+    )
+    if isinstance(retained, SourcePreservationFailed):
+        return CandidateRetentionFailed(
+            _candidate_failure_category(retained.category),
+            failed_candidate_copy_count=retained.recovery_copy_count,
+        )
+    return CandidateRetained()
+
+
+def preserve_and_reset(
+    config_path: Path,
+    snapshot: SourceSnapshot | None,
+    replacement_text: str,
+) -> RecoveryResult:
+    """Preserve the detected source, verify it, then atomically install reset text."""
+
+    preservation = preserve_source(config_path, snapshot)
+    if isinstance(preservation, SourcePreservationFailed):
+        return RecoveryFailed(
+            preservation.category,
+            recovery_copy_count=preservation.recovery_copy_count,
+        )
+    preserved = preservation.source
+
+    def guard() -> None:
+        verification = reverify_preserved_source(preserved)
+        if isinstance(verification, RecoveryVerificationFailed):
+            raise _GuardFailure(verification.category)
+
+    try:
+        atomic_write_text(config_path, replacement_text, before_replace=guard)
+    except _GuardFailure as failure:
+        return RecoveryFailed(
+            failure.category,
+            recovery_copy_count=1,
+        )
+    except OSError:
+        return RecoveryFailed(
+            RecoveryFailureCategory.RESET_FAILURE,
+            recovery_copy_count=1,
+        )
+    return RecoverySucceeded()

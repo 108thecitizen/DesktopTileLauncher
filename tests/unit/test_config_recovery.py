@@ -13,21 +13,37 @@ import pytest
 import config_recovery
 from config_recovery import (
     MAX_CONFIG_BYTES,
+    CandidateRetained,
+    CandidateRetentionFailed,
+    CandidateRetentionFailureCategory,
     ConfigLoaded,
     ConfigLoadFailureCategory,
     ConfigMissing,
     ConfigRecoveryRequired,
     ConfigurationLoadError,
     LegacyConstructionFailure,
+    PreservedBytesRead,
+    RawConfigLoaded,
     RecoveryFailed,
     RecoveryFailureCategory,
     RecoverySucceeded,
+    RecoveryVerificationFailed,
+    RecoveryVerificationSucceeded,
+    SourcePreservationFailed,
+    SourcePreserved,
     load_config,
+    load_raw_config,
     preserve_and_reset,
+    preserve_source,
+    read_preserved_bytes,
     recovery_exit_diagnostics,
     recovery_required_diagnostics,
     recovery_result_diagnostics,
+    retain_failed_candidate,
+    reverify_preserved_source,
+    reverify_source_bytes,
     validate_legacy_mapping,
+    verify_preserved_artifact,
 )
 
 pytestmark = pytest.mark.unit
@@ -55,6 +71,13 @@ def _recovery_files(config_path: Path) -> list[Path]:
     if not recovery_directory.exists():
         return []
     return sorted(recovery_directory.glob("config-*.recovery"))
+
+
+def _failed_candidate_files(config_path: Path) -> list[Path]:
+    recovery_directory = config_path.parent / "recovery"
+    if not recovery_directory.exists():
+        return []
+    return sorted(recovery_directory.glob("config-*.failed-candidate"))
 
 
 def _fail_source_close_after_real_close(
@@ -1034,3 +1057,221 @@ def test_diagnostics_contain_only_curated_categories_and_counts() -> None:
     rendered = repr(diagnostics)
     for forbidden in ("example.test", "token", "password", "config.json", "sha256"):
         assert forbidden not in rendered  # nosec B101
+
+
+def test_raw_load_exposes_exact_bytes_mapping_and_private_snapshot(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    original = (
+        b'{\r\n  "title": "Caf\xc3\xa9 \xe6\x9d\xb1\xe4\xba\xac",\r\n  "tiles": []\r\n}'
+    )
+    config_path.write_bytes(original)
+
+    result = load_raw_config(config_path)
+
+    assert isinstance(result, RawConfigLoaded)  # nosec B101
+    assert result.mapping == {"title": "Café 東京", "tiles": []}  # nosec B101
+    assert result.source_bytes == original  # nosec B101
+    assert result.snapshot.evidence_is_complete  # nosec B101
+    assert result.snapshot.evidence_byte_count == len(original)  # nosec B101
+    rendered = f"{result!r} {result.snapshot!r}"
+    assert "Café" not in rendered  # nosec B101
+    assert str(config_path) not in rendered  # nosec B101
+    verification = reverify_source_bytes(
+        config_path,
+        result.snapshot,
+        result.source_bytes,
+    )
+    assert isinstance(verification, RecoveryVerificationSucceeded)  # nosec B101
+
+
+def test_unchanged_redirect_can_be_guarded_but_not_preserved(tmp_path: Path) -> None:
+    target = tmp_path / "target.json"
+    original = b'{"title":"Redirected"}'
+    target.write_bytes(original)
+    config_path = tmp_path / "config.json"
+    try:
+        config_path.symlink_to(target)
+    except OSError:
+        pytest.skip("file symlinks are unavailable in this environment")
+
+    loaded = load_raw_config(config_path)
+    assert isinstance(loaded, RawConfigLoaded)  # nosec B101
+    verification = reverify_source_bytes(config_path, loaded.snapshot, original)
+    assert isinstance(verification, RecoveryVerificationSucceeded)  # nosec B101
+
+    preservation = preserve_source(config_path, loaded.snapshot)
+    assert isinstance(preservation, SourcePreservationFailed)  # nosec B101
+    assert preservation.category is RecoveryFailureCategory.SOURCE_UNAVAILABLE  # nosec B101
+    assert preservation.recovery_copy_count == 0  # nosec B101
+
+    target.write_bytes(b'{"title":"Changed"}')
+    changed = reverify_source_bytes(config_path, loaded.snapshot, original)
+    assert isinstance(changed, RecoveryVerificationFailed)  # nosec B101
+    assert changed.category is RecoveryFailureCategory.SOURCE_CHANGED  # nosec B101
+
+
+def test_public_preservation_handle_reads_and_reverifies_exact_private_bytes(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    original = "{\r\n  private: 'Café 東京'\r\n".encode()
+    config_path.write_bytes(original)
+    rejected = _rejected(config_path)
+
+    result = preserve_source(config_path, rejected.snapshot)
+
+    assert isinstance(result, SourcePreserved)  # nosec B101
+    assert result.recovery_copy_count == 1  # nosec B101
+    assert isinstance(  # nosec B101
+        reverify_preserved_source(result.source),
+        RecoveryVerificationSucceeded,
+    )
+    assert isinstance(  # nosec B101
+        verify_preserved_artifact(result.source),
+        RecoveryVerificationSucceeded,
+    )
+    recovered = read_preserved_bytes(result.source)
+    assert isinstance(recovered, PreservedBytesRead)  # nosec B101
+    assert recovered.data == original  # nosec B101
+    rendered = f"{result!r} {result.source!r} {recovered!r}"
+    assert "Café" not in rendered  # nosec B101
+    assert str(config_path) not in rendered  # nosec B101
+
+
+def test_preserved_source_cannot_be_constructed_without_successful_preservation(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(TypeError, match="created by preserve_source"):
+        config_recovery.PreservedSource()
+
+    config_path = tmp_path / "config.json"
+    original = b'{"private":"preserved only after verification"'
+    config_path.write_bytes(original)
+    rejected = _rejected(config_path)
+
+    result = preserve_source(config_path, rejected.snapshot)
+
+    assert isinstance(result, SourcePreserved)  # nosec B101
+    source_verification = reverify_preserved_source(result.source)
+    artifact_verification = verify_preserved_artifact(result.source)
+    recovered = read_preserved_bytes(result.source)
+    assert isinstance(  # nosec B101
+        source_verification,
+        RecoveryVerificationSucceeded,
+    )
+    assert isinstance(  # nosec B101
+        artifact_verification,
+        RecoveryVerificationSucceeded,
+    )
+    assert isinstance(recovered, PreservedBytesRead)  # nosec B101
+    assert recovered.data == original  # nosec B101
+
+
+def test_public_reverification_keeps_source_changed_precedence(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(_CORRUPT_BYTES)
+    rejected = _rejected(config_path)
+    preserved = preserve_source(config_path, rejected.snapshot)
+    assert isinstance(preserved, SourcePreserved)  # nosec B101
+    recovery_file = _recovery_files(config_path)[0]
+    config_path.write_bytes(b"externally changed source")
+    recovery_file.write_bytes(b"externally changed recovery")
+
+    result = reverify_preserved_source(preserved.source)
+
+    assert isinstance(result, RecoveryVerificationFailed)  # nosec B101
+    assert result.category is RecoveryFailureCategory.SOURCE_CHANGED  # nosec B101
+    artifact = verify_preserved_artifact(preserved.source)
+    assert isinstance(artifact, RecoveryVerificationFailed)  # nosec B101
+    assert (  # nosec B101
+        artifact.category is RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+    )
+
+
+def test_preserve_source_counts_a_published_copy_when_final_verification_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(_CORRUPT_BYTES)
+    rejected = _rejected(config_path)
+    real_hash = config_recovery._hash_stable_path
+    calls = 0
+
+    def fail_final_copy(
+        path: Path,
+        *,
+        allow_redirected: bool = False,
+    ) -> tuple[config_recovery._FileFingerprint, int, bytes]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise PermissionError("synthetic final-copy access failure")
+        return real_hash(path, allow_redirected=allow_redirected)
+
+    monkeypatch.setattr(config_recovery, "_hash_stable_path", fail_final_copy)
+
+    result = preserve_source(config_path, rejected.snapshot)
+
+    assert isinstance(result, SourcePreservationFailed)  # nosec B101
+    assert (  # nosec B101
+        result.category is RecoveryFailureCategory.RECOVERY_VERIFICATION_FAILURE
+    )
+    assert result.recovery_copy_count == 1  # nosec B101
+    assert len(_recovery_files(config_path)) == 1  # nosec B101
+
+
+def test_failed_candidate_retention_requires_and_keeps_exact_owned_bytes(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    candidate = b'{"schema_version":1,"title":"Caf\xc3\xa9"}'
+    config_path.write_bytes(candidate)
+    loaded = load_raw_config(config_path)
+    assert isinstance(loaded, RawConfigLoaded)  # nosec B101
+
+    rejected = retain_failed_candidate(
+        config_path,
+        loaded.snapshot,
+        candidate + b" ",
+    )
+    assert isinstance(rejected, CandidateRetentionFailed)  # nosec B101
+    assert rejected.category is CandidateRetentionFailureCategory.SOURCE_CHANGED  # nosec B101
+    assert rejected.failed_candidate_copy_count == 0  # nosec B101
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+
+    retained = retain_failed_candidate(config_path, loaded.snapshot, candidate)
+    assert isinstance(retained, CandidateRetained)  # nosec B101
+    assert retained.failed_candidate_copy_count == 1  # nosec B101
+    candidate_files = _failed_candidate_files(config_path)
+    assert len(candidate_files) == 1  # nosec B101
+    assert candidate_files[0].read_bytes() == candidate  # nosec B101
+
+
+def test_failed_candidate_final_name_collision_never_overwrites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    candidate = b'{"schema_version":1}'
+    config_path.write_bytes(candidate)
+    loaded = load_raw_config(config_path)
+    assert isinstance(loaded, RawConfigLoaded)  # nosec B101
+    recovery_directory = tmp_path / "recovery"
+    recovery_directory.mkdir()
+    stage_token = "a" * 32
+    collision_token = "b" * 32
+    final_token = "c" * 32
+    sentinel = recovery_directory / f"config-{collision_token}.failed-candidate"
+    sentinel.write_bytes(b"sentinel")
+    tokens = iter([stage_token, collision_token, final_token])
+    monkeypatch.setattr(config_recovery, "_new_token", lambda: next(tokens))
+
+    result = retain_failed_candidate(config_path, loaded.snapshot, candidate)
+
+    assert isinstance(result, CandidateRetained)  # nosec B101
+    assert sentinel.read_bytes() == b"sentinel"  # nosec B101
+    retained = recovery_directory / f"config-{final_token}.failed-candidate"
+    assert retained.read_bytes() == candidate  # nosec B101
