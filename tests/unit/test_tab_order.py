@@ -146,6 +146,29 @@ def test_add_appends_unique_identifier_after_factory_collision() -> None:
 
 
 @pytest.mark.unit
+def test_workspace_identity_is_blocked_for_retained_and_new_tab_ids() -> None:
+    normalized = normalize_tab_order(
+        ["A"],
+        {"A": A_ID},
+        [A_ID],
+        _id_factory([A_ID, B_ID]),
+        blocked_ids=(A_ID,),
+    )
+
+    added = add_tab(
+        normalized,
+        "B",
+        _id_factory([A_ID, C_ID]),
+        blocked_ids=(A_ID,),
+    )
+
+    assert normalized.tab_ids == {"A": B_ID}
+    assert normalized.tab_order == [B_ID]
+    assert added.tab_ids == {"A": B_ID, "B": C_ID}
+    assert added.tab_order == [B_ID, C_ID]
+
+
+@pytest.mark.unit
 def test_delete_removes_identifier_and_all_order_occurrences() -> None:
     state = TabOrderState(
         ["A", "B", "C"],

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -59,6 +59,8 @@ def normalize_tab_order(
     raw_tab_ids: object,
     raw_tab_order: object,
     id_factory: TabIdFactory = new_tab_id,
+    *,
+    blocked_ids: Iterable[object] = (),
 ) -> TabOrderState:
     """Normalize persisted tab identity and ordering data without losing tabs.
 
@@ -75,12 +77,17 @@ def normalize_tab_order(
             seen_titles.add(title)
 
     saved_ids = raw_tab_ids if isinstance(raw_tab_ids, dict) else {}
-    reserved_ids = _reserved_saved_ids(raw_tab_ids, raw_tab_order)
+    blocked = {
+        candidate
+        for value in blocked_ids
+        if (candidate := _canonical_tab_id(value)) is not None
+    }
+    reserved_ids = _reserved_saved_ids(raw_tab_ids, raw_tab_order) | blocked
     used_ids: set[str] = set()
     tab_ids: dict[str, str] = {}
     for title in clean_tabs:
         candidate = _canonical_tab_id(saved_ids.get(title))
-        if candidate is None or candidate in used_ids:
+        if candidate is None or candidate in used_ids or candidate in blocked:
             candidate = _new_unique_tab_id(reserved_ids | used_ids, id_factory)
         tab_ids[title] = candidate
         used_ids.add(candidate)
@@ -128,6 +135,8 @@ def add_tab(
     state: TabOrderState,
     title: str,
     id_factory: TabIdFactory = new_tab_id,
+    *,
+    blocked_ids: Iterable[object] = (),
 ) -> TabOrderState:
     """Append a newly identified tab to the canonical full order."""
 
@@ -135,6 +144,11 @@ def add_tab(
         return state
 
     used_ids = set(state.tab_ids.values()) | set(state.tab_order)
+    used_ids.update(
+        candidate
+        for value in blocked_ids
+        if (candidate := _canonical_tab_id(value)) is not None
+    )
     tab_id = _new_unique_tab_id(used_ids, id_factory)
     return TabOrderState(
         [*state.tabs, title],

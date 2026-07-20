@@ -2,8 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-18
+- Q5 amendment: 2026-07-20
 - Decision owners: DesktopTileLauncher maintainers
-- Tracking issue: #106
+- Tracking issues: #106, #112
 - Planning references: Q2, STAB-03, WORK-01, MODE-05, IMAGE-05, REVIEW-05, PLAT-02
 
 ## Context
@@ -24,15 +25,22 @@ resources, per-tab placements, New/In Use/Archived workflow state, Display and K
 modes, safe managed copies, deterministic ordering, staged imports, and platform seams.
 The state contract must be agreed before recovery and migration code is introduced.
 
-This ADR defines the target contract. It does not change the runtime schema or behavior.
+This ADR defines the target contract. The Q5 amendment stages the persisted contract without
+changing the accepted full-graph semantics: schema version 1 is the Workspace/Tab
+identity-only format, and the full Resource/Placement/DeviceBinding graph is schema version 2.
+The ADR remains Accepted, and RD-06 through RD-10 remain approved without semantic changes.
+The Windows Content Triage “v1” product milestone name is also unchanged; milestone names and
+persisted schema-version numbers are distinct.
 
 ## Decision summary
 
-1. A missing `schema_version` is legacy version 0. The first explicit version is 1.
-2. Version 1 separates portable application state from device-specific bindings and
+1. A missing `schema_version` is legacy version 0. Version 1 is the explicit identity-only
+   Workspace/Tab schema. Version 2 is the full graph previously described as version 1.
+2. Version 2 separates portable application state from device-specific bindings and
    short-lived, recoverable import staging stored outside committed configuration.
-3. Workspace, Tab, Resource, Placement, DeviceBinding, and ImportBatch use immutable,
-   canonical UUID strings.
+3. Workspace and Tab use immutable, canonical UUID strings in version 1. Version 2 retains
+   those identities and adds immutable Resource, Placement, DeviceBinding, and ImportBatch
+   identities.
 4. A Resource owns the underlying target, managed content, intrinsic metadata, and default
    label and icon. A Placement owns tab membership, workflow status, its positions in the
    Tab's Display and Kanban orders, color, and optional label and icon overrides. A
@@ -41,9 +49,9 @@ This ADR defines the target contract. It does not change the runtime schema or b
    Visible, Hidden, and Archived from those values. Archiving preserves visibility and
    restoring returns the tab to that prior visible/hidden state. Tile workflow status is
    separate from all tab state.
-6. Each Tab has an independent Display order and per-status Kanban column orders. Reordering
-   one does not change the other. Ordered exports use Display order initially; version 1 has
-   no separate export order.
+6. In version 2, each Tab has an independent Display order and per-status Kanban column
+   orders. Reordering one does not change the other. Ordered exports use Display order
+   initially; version 2 has no separate export order.
 7. Discard removes only a Placement. It never deletes an original file or a managed copy.
 8. ImportBatch is a durable, recoverable staging manifest outside the committed
    configuration. Pre-commit batches can be resumed or abandoned after interruption. Commit
@@ -51,9 +59,12 @@ This ADR defines the target contract. It does not change the runtime schema or b
    committed state never references an unavailable staged asset.
 9. Recovery precedes migration. Migration validates a complete candidate before atomic
    replacement and never overwrites the last good configuration on failure.
-10. Legacy migration always names the single created Workspace `Default Workspace`. The
-    existing launcher title remains `application.title` only and is not reused as the
-    Workspace name.
+10. Version 0 to version 1 migration always names the single created Workspace
+    `Default Workspace`. The existing launcher title remains `application.title` only and
+    is not reused as the Workspace name.
+11. Q5 implements only version 0 to version 1. A later focused slice will implement version
+    1 to version 2. Until then, explicit version 2 is unsupported newer and is never opened
+    or rewritten.
 
 ## Version envelope
 
@@ -64,6 +75,8 @@ This ADR defines the target contract. It does not change the runtime schema or b
 - Boolean, floating-point, string, negative, and otherwise malformed version values are
   invalid; they are not coerced.
 - The application migrates only through consecutive registered steps.
+- Q5 supports versions 0 through 1 and registers only the version 0 to version 1 step.
+  Explicit version 2 remains unsupported newer until the later version 1 to version 2 slice.
 - A document whose version is greater than the newest supported version is not opened or
   rewritten. The user receives an unsupported-newer-version recovery message.
 - A document whose version is lower than the oldest supported input version is preserved
@@ -74,22 +87,111 @@ This ADR defines the target contract. It does not change the runtime schema or b
 - Versioned documents are validated against the fields defined for that version.
 - Unknown fields outside an `extensions` object are validation errors. They are never
   silently dropped and the source is never overwritten.
-- Each versioned entity may carry an `extensions` object. Extension keys must be
-  reverse-domain or repository-qualified names. Values are opaque JSON and round-trip
+- In version 1, the application, Workspace, and Tab `extensions` objects must be empty. The
+  root `extensions` object is either empty or contains exactly the fixed
+  `io.github.108thecitizen.legacy` object described below. Version 1 introduces no general
+  extension-key grammar.
+- In version 2, each versioned entity may carry an `extensions` object. Extension keys must
+  be reverse-domain or repository-qualified names. Values are opaque JSON and round-trip
   unchanged.
 - Legacy version 0 fields that are not recognized are copied into
   `extensions["io.github.108thecitizen.legacy"]` during migration so a successful migration
   does not silently discard them.
 
-### Root state
+### Version 1 identity-only root state
 
-Version 1 has this logical shape. Arrays are shown for readability; each `id` must be
-unique within the complete document. The empty arrays identify top-level collections and do
-not by themselves form a valid graph.
+Version 1 has exactly this logical shape. The UUIDs are illustrative, and object-key order is
+not semantic.
 
 ```json
 {
   "schema_version": 1,
+  "application": {
+    "title": "My Launcher",
+    "default_workspace_id": "11111111-1111-4111-8111-111111111111",
+    "extensions": {}
+  },
+  "workspaces": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "name": "Default Workspace",
+      "tab_order": [
+        "22222222-2222-4222-8222-222222222222"
+      ],
+      "extensions": {}
+    }
+  ],
+  "tabs": [
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "workspace_id": "11111111-1111-4111-8111-111111111111",
+      "name": "Main",
+      "visibility": "visible",
+      "extensions": {}
+    }
+  ],
+  "tiles": [
+    {
+      "name": "ChatGPT",
+      "url": "https://chat.openai.com",
+      "tab_id": "22222222-2222-4222-8222-222222222222",
+      "icon": null,
+      "bg": "#F5F6FA",
+      "browser": null,
+      "chrome_profile": null,
+      "open_target": "tab"
+    }
+  ],
+  "columns": 5,
+  "auto_fit": true,
+  "window_x": null,
+  "window_y": null,
+  "window_w": null,
+  "window_h": null,
+  "extensions": {}
+}
+```
+
+Every shown field is required. Unknown fields outside the permitted `extensions` objects are
+invalid. `schema_version` is integer `1`, not Boolean. `application` contains exactly a
+string `title`, a resolving canonical lowercase UUID `default_workspace_id`, and empty
+`extensions`; blank and non-ASCII titles are valid. Version 1 contains exactly one Workspace
+with a non-empty name, complete `tab_order`, and empty `extensions`. Its non-empty `tabs`
+have globally unique canonical lowercase IDs, resolve to that Workspace, have unique
+non-empty names, use `visible` or `hidden`, and include at least one visible Tab. Every Tab
+occurs exactly once in the Workspace's `tab_order`.
+
+Root `tiles` retains the existing global Tile order; the order for a Tab is that array's
+subsequence. Every Tile has exactly the shown fields, uses `tab_id` rather than legacy
+title-valued `tab`, and resolves to a Tab. Nullable fields are required and use JSON null
+when absent. `open_target` is `tab` or `window`; `auto_fit` is Boolean; `columns` and window
+values retain their current accepted integer domains, with Booleans rejected as integers.
+Root `extensions` is empty or exactly:
+
+```json
+{
+  "io.github.108thecitizen.legacy": {
+    "unrecognized_legacy_field": "preserved value"
+  }
+}
+```
+
+Retained legacy values must be recursively finite strict JSON. For migration and native
+missing/reset construction, the Workspace name is exactly `Default Workspace`. A valid
+current version 1 document may use another non-empty Workspace name and round-trips it
+unchanged. The launcher title remains independent: a legacy launcher titled `My Launcher`
+retains `application.title: "My Launcher"`, while its migrated Workspace is still named
+`Default Workspace`.
+
+### Version 2 full-graph root state
+
+Version 2 retains the accepted full-graph contract previously numbered version 1. Arrays are
+shown for readability; each `id` must be unique within the complete document. The empty
+arrays identify top-level collections and do not by themselves form a valid graph.
+
+```json
+{
+  "schema_version": 2,
   "application": {
     "title": "My Launcher",
     "default_workspace_id": "0b7c...",
@@ -103,10 +205,6 @@ not by themselves form a valid graph.
   "extensions": {}
 }
 ```
-
-For migration, those two names are deliberately independent. A legacy launcher titled
-`My Launcher` retains `application.title: "My Launcher"`, while the Workspace referenced by
-`default_workspace_id` has `name: "Default Workspace"`.
 
 An ImportBatch is deliberately absent from committed configuration. Its recoverable,
 short-lived staging manifest is defined separately below.
@@ -129,9 +227,13 @@ Migration must be pure and repeatable for the same input bytes.
 
 - Valid existing tab UUIDs are retained.
 - Missing, malformed, or duplicate legacy IDs are replaced deterministically.
-- The migration computes a SHA-256 digest of canonicalized legacy JSON and derives UUIDv5
-  values using the standard URL namespace and names of the form
-  `https://github.com/108thecitizen/DesktopTileLauncher/migration/v0/{digest}/{kind}/{ordinal}`.
+- A migration computes a SHA-256 digest of its canonicalized source JSON and derives UUIDv5
+  values using the standard URL namespace and future names of the form
+  `https://github.com/108thecitizen/DesktopTileLauncher/migration/v{source_version}/{digest}/{kind}/{ordinal}`.
+- Q5 implements only the exact version 0 names
+  `https://github.com/108thecitizen/DesktopTileLauncher/migration/v0/{digest}/workspace/0`
+  and
+  `https://github.com/108thecitizen/DesktopTileLauncher/migration/v0/{digest}/tab/{ordinal}`.
 - Ordinals come from the preserved legacy order, not from a dictionary iteration order.
 - A rerun against identical legacy input therefore produces identical candidate state.
 - New entities created after migration use UUIDv4 and are persisted before another process
@@ -141,6 +243,9 @@ Ephemeral refresh-operation tokens and in-memory object identities are not persi
 and must not be used as Resource, Placement, or ImportBatch identity.
 
 ## Entity contracts
+
+Workspace and the version 1 subset of Tab apply to both schema versions. The additional Tab
+fields and the Resource, Placement, and DeviceBinding contracts apply to version 2.
 
 ### Workspace
 
@@ -155,12 +260,13 @@ Required fields:
 
 Invariants:
 
-- Every Tab belongs to exactly one Workspace in version 1.
+- Every Tab belongs to exactly one Workspace.
 - Every ID in `tab_order` resolves to a Tab owned by the Workspace.
 - Every owned Tab occurs exactly once in `tab_order`.
-- At least one Workspace and one Tab exist.
-- Window geometry is device-specific and is represented by a DeviceBinding, not portable
-  Workspace state.
+- Version 1 has exactly one Workspace and at least one Tab. Version 2 has at least one of
+  each.
+- In version 2, window geometry is device-specific and is represented by a DeviceBinding,
+  not portable Workspace state. Version 1 retains the existing root window fields.
 
 Window ownership, simultaneous windows, restoration, compact palettes, and tab tear-off
 remain later behavior. This ADR does not define a running-window/session model.
@@ -171,8 +277,12 @@ Required fields:
 
 - `id`: immutable UUID.
 - `workspace_id`: owning Workspace ID.
-- `name`: non-empty user-visible name, unique within its Workspace for version 1.
+- `name`: non-empty user-visible name, unique within its Workspace.
 - `visibility`: `visible` or `hidden`.
+- `extensions`: opaque extension map; it is empty in version 1.
+
+Version 2 adds these required fields without changing their accepted semantics:
+
 - `lifecycle`: `active` or `archived`.
 - `view_mode`: `display` or `kanban`.
 - `display_filter`: a duplicate-free subset of `new`, `in_use`, and `archived`, serialized
@@ -181,7 +291,6 @@ Required fields:
   Display's row-major reading order: top-left is first and bottom-right is last.
 - `kanban_order`: object with `new`, `in_use`, and `archived` arrays. Each array is the
   top-to-bottom order of Placements in that workflow-status column.
-- `extensions`: opaque extension map.
 
 Visibility and lifecycle are independent. The user-facing category is derived as follows:
 
@@ -198,11 +307,12 @@ Hide and Show change only `visibility` and apply to active tabs. Archive changes
 tab returns to Hidden. Archived tabs never appear in the normal tab bar, regardless of the
 remembered visibility value.
 
-The exact archived-tab manager and delete/trash UI remain deferred. Version 1 migration
-sets all existing tabs to `lifecycle: active` and preserves current hidden/visible state.
+The exact archived-tab manager and delete/trash UI remain deferred. Version 1 to version 2
+migration sets all existing tabs to `lifecycle: active` and preserves current hidden/visible
+state.
 
-An empty Display filter is valid and intentionally displays no placements. The migration
-default is `["new", "in_use"]`.
+An empty Display filter is valid and intentionally displays no placements. The version 1 to
+version 2 migration default is `["new", "in_use"]`.
 
 ### Resource
 
@@ -486,6 +596,9 @@ M2 rules:
 
 ## Ordering contract
 
+This section applies to the version 2 full graph. Version 1 has only Workspace `tab_order`
+and the root Tile array, whose per-Tab order is its `tab_id` subsequence.
+
 Display arrangement and Kanban evaluation serve different workflows and therefore persist
 independent orders.
 
@@ -522,7 +635,7 @@ independent orders.
 
 ### Export order
 
-- Version 1 stores no independent export order.
+- Version 2 stores no independent export order.
 - Any future export first determines its included Placement set under that export's own
   scope rules. Within each Tab, it sorts that Tab's included set by `display_order`.
 - Thus, within a Tab, the included tile nearest the Display's top-left exports first and the
@@ -547,61 +660,125 @@ independent orders.
 - Deleting or archiving a Tab is not equivalent to discarding all of its Placements. Tab
   archive/delete/trash semantics require their own later decision.
 
-## Legacy version 0 migration
+## Legacy version 0 to identity version 1 migration
 
-Migration from the current format to version 1 follows this mapping.
+Q5 migrates the current format to version 1 through the Q4 transaction with this mapping.
 
 | Legacy value | Version 1 value |
 |---|---|
-| top-level `title` | `application.title` only, preserved independently from Workspace naming |
+| top-level `title` | `application.title` only; missing materializes `Launcher` |
 | synthetic migrated Workspace | exactly one Workspace named `Default Workspace`; its ID becomes `application.default_workspace_id` and it owns every migrated Tab |
-| `columns`, `auto_fit`, window geometry | local Workspace/window DeviceBinding settings |
-| `tabs` and tile-referenced missing tabs | Tab entities in normalized current order |
-| valid `tab_ids` | retained Tab IDs |
-| missing/invalid/duplicate `tab_ids` | deterministic migration UUIDs |
-| `tab_order` | default Workspace `tab_order`, retaining valid order and appending omitted tabs |
-| `hidden_tabs` | Tab `visibility`; all Tab lifecycles become `active` |
-| each legacy Tile | one distinct URL Resource and one Placement; no URL deduplication during migration |
-| Tile `tab` title | resolved Placement `tab_id` |
-| Tile list position | per-tab `display_order` and `kanban_order.in_use`, in the same preserved order |
+| `tabs` and Tile-referenced missing tabs | Tab entities in normalized current order |
+| valid `tab_ids` | retained canonical Tab IDs |
+| missing, malformed, or duplicate Tab IDs | deterministic migration UUIDs |
+| `tab_order` | ordering hints for the default Workspace `tab_order`; omitted Tabs append in normalized discovery order |
+| `hidden_tabs` | Tab `visibility` |
+| each legacy Tile | one root Tile with every field preserved, replacing only title-valued `tab` with resolving `tab_id` |
+| `columns`, `auto_fit`, and window geometry | same root settings with current defaults materialized when missing |
+| any other unrecognized top-level field | fixed root `extensions["io.github.108thecitizen.legacy"]` object |
+
+The detached source mapping is immutable. Migration continues using the completed shallow
+legacy validation boundary: malformed JSON and incompatible known fields take the Q3
+recovery route, while non-finite unknown values fail closed before preservation or any
+migration step. No migration artifact is created and the source remains unchanged.
+
+Migration preserves current effective legacy behavior before replacing names with IDs:
+
+- Retain string `tabs` entries in encounter order, filter nonstrings, and collapse duplicate
+  names to their first occurrence without trimming or case folding.
+- A Tile with no `tab` uses the existing implicit `Main`. Append Tile-only Tab names in
+  first-seen Tile order. If no Tab remains, create `Main`.
+- An empty Tab name or empty Tile Tab name is an expected migration rejection after exact
+  source preservation; migration never renames, drops, or merges it.
+- Filter hidden names to retained Tabs and deduplicate them. If every final Tab would be
+  hidden, make the first final ordered Tab visible.
+- Preserve global Tile order and each per-Tab subsequence. Preserve every Tile field and
+  launch behavior, changing only `tab` to the resolving `tab_id`.
+- Materialize the existing defaults for every missing field: title `Launcher`, columns `5`,
+  `auto_fit: true`, null window values, and the current Tile defaults.
+- Consume recognized `tabs`, `hidden_tabs`, `tab_ids`, and `tab_order`; do not copy them into
+  extensions. Copy every other unrecognized top-level field into the fixed legacy object.
+- Create exactly one Workspace named `Default Workspace`, assign every Tab to it, and use its
+  ID as `application.default_workspace_id`. Never derive, copy, or fall back from the
+  application title when naming the Workspace.
+
+Canonical valid legacy Tab UUIDs associated with migrated names are retained in lowercase.
+For duplicate IDs, the first Tab in normalized discovery order retains the ID and later Tabs
+receive deterministic replacements. A non-object `tab_ids` or non-list `tab_order` is
+tolerated as absent hints. `tab_order` contributes only known, duplicate-free canonical IDs
+assigned to migrated Tabs; malformed, duplicate, and dangling entries are ignored, and
+omitted Tabs append in normalized discovery order. Canonical UUIDs anywhere in legacy
+`tab_ids` values or `tab_order` remain collision reservations even when dangling, but do not
+create entities or references.
+
+The complete detached version 0 mapping is canonicalized as:
+
+```python
+json.dumps(
+    detached_v0_mapping,
+    ensure_ascii=False,
+    sort_keys=True,
+    indent=2,
+    allow_nan=False,
+).encode("utf-8")
+```
+
+Those canonical bytes and the serialized candidate use LF and no trailing newline. The
+canonical bytes' lowercase SHA-256 digest feeds the exact version 0 UUIDv5 names defined
+above. A Tab ordinal is its zero-based position in the complete final Workspace order, not a
+count of generated IDs. A derived collision with a reserved, retained, or already derived
+UUID rejects migration; there is no retry name or random fallback. The step uses no
+randomness, time, process state, mutable globals, environment, filesystem, network, or Qt.
+Identical canonical input produces identical IDs and candidate bytes.
+
+Migration-specific tests must prove that exactly one Workspace is created, its name is
+exactly `Default Workspace`, its ID is the `default_workspace_id` target, and
+`application.title` equals the preserved legacy launcher title. Custom, blank/default,
+missing, and non-ASCII title cases demonstrate that the two names are independent.
+
+Missing configuration bypasses migration and constructs native version 1 directly with
+`application.title: "My Launcher"`, one `Default Workspace`, one visible `Main` Tab, and the
+existing ChatGPT, Gmail, and Notion Tiles assigned to Main by `tab_id`. It uses distinct,
+collision-checked Workspace and Tab UUIDv4 values from an injectable runtime allocator,
+validates the complete candidate, and atomically persists it before returning usable state.
+Q3 Preserve and Reset installs the same native version 1 only after preserving and verifying
+the corrupt source. Native IDs are never regenerated while loading, normalizing, saving, or
+restarting.
+
+## Version 1 to version 2 migration
+
+A later focused slice will implement version 1 to version 2. It must preserve the version 1
+Workspace, Tab, Tile, application, setting, and extension state while producing the accepted
+full graph. The accepted mapping, previously described as direct version 0 to version 1,
+remains:
+
+| Version 1 value | Version 2 value |
+|---|---|
+| `application.title` | unchanged, independently from Workspace naming |
+| sole Workspace | same identity, name, default reference, ownership, and `tab_order` |
+| root `columns`, `auto_fit`, and window geometry | local Workspace/window DeviceBinding settings |
+| Tabs | same IDs, names, ownership, order, and visibility; lifecycle becomes `active` |
+| each root Tile | one distinct URL Resource and one Placement; no URL deduplication |
+| Tile `tab_id` | resolving Placement `tab_id` |
+| Tile-list per-Tab subsequence | `display_order` and `kanban_order.in_use` in the same order |
 | Tile `name` | Resource `default_label`; Placement `label_override: null` |
 | Tile `icon` | Resource `default_icon`; Placement `icon_override: null` |
 | Tile `bg` | Placement `background_color` |
 | Tile URL | Resource URL target |
 | Tile browser/profile/open target | local Placement/launch DeviceBinding |
-| existing tiles | Placement `workflow_status: in_use` |
-| existing tabs | `view_mode: display`, Display filter `new` + `in_use` |
+| existing Tiles | Placement `workflow_status: in_use` |
+| existing Tabs | `view_mode: display`, Display filter `new` + `in_use` |
 
-Additional rules:
+The later step does not deduplicate Resources, merge Tabs, normalize user-facing labels, drop
+Tiles, or change launch behavior. Each Tile becomes a distinct Resource, so Resource defaults
+and null Placement overrides preserve appearance without introducing sharing between formerly
+independent Tiles. Existing Tiles initialize Display order and the In Use Kanban column from
+the same preserved per-Tab order; New and Archived Kanban arrays start empty. Every current
+Tab, hidden state, stable order, Tile field, launch setting, window value, and permitted
+extension remains accounted for. The complete version 2 candidate must pass all version 2
+invariants before any write.
 
-- The source document is treated as immutable input.
-- Migration creates exactly one Workspace named `Default Workspace`, regardless of whether
-  the legacy launcher title is blank or non-blank. It never derives, copies, or falls back
-  the Workspace name from that title. The original title is preserved in `application.title`
-  under the existing title rules and is not trimmed or normalized merely for Workspace
-  naming.
-- Migration never deduplicates Resources, merges tabs, normalizes user-facing labels, drops
-  tiles, or changes launch behavior.
-- Because migration creates one distinct Resource per legacy Tile, moving each legacy name
-  and icon into Resource defaults while leaving Placement overrides null preserves the
-  current appearance exactly and does not introduce sharing between formerly independent
-  tiles.
-- Existing Tiles initialize both Display order and the In Use Kanban column from the same
-  preserved per-tab legacy order; New and Archived Kanban arrays start empty.
-- Every current tab, hidden state, stable order, tile, icon reference, background color,
-  browser/profile preference, open target, window value, and extension is accounted for.
-- Invalid references are repaired only by the current documented invariants: tile-only tab
-  titles are added, duplicate titles collapse to the first occurrence, and an invalid tile
-  Tab falls back to the first Tab only when no source title can be recovered.
-- The candidate must pass all version 1 invariants before any write.
-
-Migration-specific tests must prove that exactly one Workspace is created, its name is
-exactly `Default Workspace`, its ID is the `default_workspace_id` target, and
-`application.title` equals the preserved legacy launcher title. Cases include a custom
-title, a blank/default title, and a non-ASCII title, demonstrating that the two names are
-independent.
-
-New photo imports after migration create image Resources, New Placements, and, when the batch
+New photo imports after version 2 create image Resources, New Placements, and, when the batch
 creates a Tab, a Kanban Tab with the default Display filter of New plus In Use.
 
 ## Recovery, migration, and rollback boundary
@@ -615,7 +792,8 @@ The startup sequence is normative:
 4. Preserve a byte-for-byte recovery copy before the first migration write.
 5. Apply consecutive pure migration steps in memory. No step uses Qt, the network, a real
    device, wall-clock ordering, or global mutable state.
-6. Validate the complete target graph and managed-path constraints.
+6. Validate the complete target document and its version-specific graph and managed-path
+   constraints.
 7. Serialize deterministically and atomically replace the configuration.
 8. Reload and validate the written file before declaring migration complete.
 
@@ -628,18 +806,32 @@ Failure rules:
 - Recovery copies use collision-safe names, remain outside managed asset cleanup, and are
   never overwritten.
 - Reopening an already valid version 1 document is idempotent and performs no migration write.
+- Loaded version 1 state never passes through repair-oriented legacy normalization and never
+  regenerates identities. Invalid identities or references are rejected before any write.
 - Diagnostics record versions, step names, counts, and sanitized failure categories, not URLs,
   file content, titles, paths, or credentials.
 
 Q3 implements corrupt-input preservation and user recovery. Q4 implements the version
 registry, pure step runner, validation hooks, deterministic tests, and rollback plumbing.
-Q5 implements the version 0 to version 1 Workspace/Tab identity slice. Later focused slices
-add Resource/Placement, workflow, DeviceBinding, and ImportBatch runtime behavior while
-conforming to this contract.
+Q5 implements the version 0 to version 1 Workspace/Tab identity slice. A later focused slice
+implements version 1 to version 2 before subsequent slices add the accepted full-graph
+Resource/Placement, workflow, DeviceBinding, and ImportBatch runtime behavior.
 
 ## Validation invariants
 
-A version 1 candidate is valid only when:
+### Version 1
+
+A version 1 candidate is valid only when its exact required root, application, Workspace,
+Tab, Tile, setting, window, and extension fields have the documented JSON types and values.
+Workspace and Tab IDs are canonical lowercase UUIDs and globally unique within the identity
+graph; the application default, every Tab owner, every `tab_order` member, and every Tile
+`tab_id` resolve. The sole Workspace owns every Tab, its `tab_order` contains every Tab
+exactly once, Tab names are unique and non-empty, and at least one Tab is visible. Root Tile
+order and fields remain complete, and unknown fields or non-finite values are rejected.
+
+### Version 2
+
+A version 2 candidate is valid only when:
 
 - Every required field has the exact documented JSON type and enum value.
 - All IDs are canonical and globally unique across entity types.
@@ -659,10 +851,10 @@ A version 1 candidate is valid only when:
 - DeviceBinding uniqueness and subject rules hold.
 - Extension values are valid JSON and their namespace keys are valid.
 
-Validation is strict. Repair belongs in an explicit migration step, not in general version 1
-loading.
+Validation is strict in both versions. Repair belongs in an explicit migration step, not in
+general versioned loading.
 
-ImportBatch manifests are validated separately from committed version 1 state. Validation
+ImportBatch manifests are validated separately from committed version 2 state. Validation
 requires a supported manifest version and legal state transition; the state-appropriate
 base snapshot/digest and, once constructed, candidate snapshot/digest; unique planned entity
 IDs; complete item outcomes and both order insertions; size and digest agreement for every
@@ -678,9 +870,9 @@ Anything else enters explicit recovery without configuration mutation or automat
   hermetic tests. It does not add feature UI.
 - Q5: create the default Workspace named exactly `Default Workspace`, preserve the existing
   launcher title in `application.title`, and introduce stable Workspace/Tab identity
-  migration while preserving existing valid Tab IDs and behavior.
-- Later Resource/Placement slice: introduce typed targets, placement ownership, status, and
-  independent Display/Kanban orders.
+  migration while preserving existing valid Tab IDs and behavior as schema version 1.
+- Later version 1 to version 2 Resource/Placement slice: introduce typed targets, placement
+  ownership, status, and independent Display/Kanban orders.
 - Later image/import slices: implement the RD-09 recovery journal, managed assets,
   DeviceBindings, crash-boundary tests, and the M2 routing limits.
 - Later Kanban slice: implement independent column queues and their status-transition rules
@@ -779,7 +971,8 @@ This ADR intentionally does not decide:
 
 ## Review checklist
 
-- [x] Version 0 and version 1 boundaries are unambiguous.
+- [x] Version 0 legacy input, identity-only version 1, and full-graph version 2 boundaries are
+  unambiguous.
 - [x] Entity identity, ownership, references, and deletion rules are complete.
 - [x] Resource defaults, Placement overrides, inheritance, refresh, and legacy presentation
   migration follow the approved ownership rules.
@@ -797,4 +990,5 @@ This ADR intentionally does not decide:
 - [x] Manifest/candidate privacy, bounded scanning, path containment, digest verification,
   atomic transitions, partial-failure reporting, and the confirmed M2 limits are covered.
 - [x] Q3, Q4, Q5, and later implementation slices can be issued independently.
-- [x] No runtime or persisted-schema change is included in this ADR PR.
+- [x] The Q5 amendment changes only schema staging; accepted version 2 entity semantics remain
+  unchanged.

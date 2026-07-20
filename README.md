@@ -116,17 +116,19 @@ SPDX-License-Identifier: Apache-2.0
 ### Configuration versions and recovery
 
 DesktopTileLauncher reads at most 4 MiB of `config.json` for normal UTF-8 and
-JSON parsing. Production remains on the existing implicit, unversioned legacy
-v0 format: a configuration without `schema_version` is constructed, normalized,
-and saved using the existing behavior. The production migration registry has no
-registered steps, no v0-to-v1 migration runs, and the application does not emit
-`schema_version` 1.
+JSON parsing. Production persists the explicit identity-only schema version 1:
+one Workspace, stable Workspace and Tab UUIDs, ID-based Tile membership, and the
+existing flat Tile and launcher settings. Legacy configuration without
+`schema_version` is version 0 and migrates transactionally through the registered
+pure v0-to-v1 step. Migration creates exactly one `Default Workspace`; the
+launcher title is preserved independently as `application.title`.
 
 An explicit `schema_version` of 0 is invalid. A malformed version value or any
-positive explicit version, including version 1, receives fixed **Exit**-only
-handling before legacy construction, normalization, or saving. Migration
-failures also use fixed Exit-only handling. These version and migration cases
-never offer Preserve and Reset.
+unsupported newer version, including the deferred full-graph version 2, receives
+fixed **Exit**-only handling before legacy construction, normalization, or
+saving. Invalid current version 1 and migration failures also use fixed
+Exit-only handling. These version and migration cases never offer Preserve and
+Reset.
 
 The existing recovery choices remain unchanged for the established corrupt or
 unreadable configuration categories. Startup offers exactly **Exit** or
@@ -140,16 +142,17 @@ configuration is installed atomically. A reset is not attempted when copying,
 verification, or the final source-change check fails. Verified recovery copies
 are never overwritten or deleted automatically.
 
-The Qt-free migration harness is ready for future consecutive, registered
-schema steps. It validates the source before preservation; a source-validation
-rejection creates no recovery artifact and performs no write. When at least one
-step will run, the harness preserves and independently verifies one exact
-recovery copy before the first step, validates every detached intermediate and
-target document, and writes deterministic UTF-8 JSON through a guarded atomic
-replacement. Candidate JSON preserves non-ASCII text, sorts keys, uses two-space
-indentation and LF line endings, rejects non-finite numbers, and has no trailing
-newline. The harness reverifies both the source and recovery copy immediately
-before replacement, then reloads and validates the installed candidate.
+The Qt-free migration harness runs the pure deterministic v0-to-v1 step and is
+ready for future consecutive registered steps. It validates the source before
+preservation; a source-validation rejection creates no recovery artifact and
+performs no write. When at least one step will run, the harness preserves and
+independently verifies one exact recovery copy before the first step, validates
+every detached intermediate and target document, and writes deterministic
+UTF-8 JSON through a guarded atomic replacement. Candidate JSON preserves
+non-ASCII text, sorts keys, uses two-space indentation and LF line endings,
+rejects non-finite numbers, and has no trailing newline. The harness reverifies
+both the source and recovery copy immediately before replacement, then reloads
+and validates the installed candidate.
 
 After replacement, the harness must successfully reload the exact candidate
 bytes before treating the installed file as transaction-owned. Retention and
@@ -167,11 +170,11 @@ that cannot be completed or verified also fails closed. Published recovery
 copies and failed candidates are private, never overwritten, and never deleted
 automatically.
 
-The normal implicit-v0 startup save has a separate overwrite guard. Immediately
-before installing the normalized legacy text, the application verifies that the
-source still matches the bytes classified at startup. If another process changed
-or replaced the file, the save is cancelled and the application exits without
-overwriting the newer source.
+A valid current version 1 file loads directly without a startup normalization
+write and never passes through repair-oriented legacy normalization. Workspace
+and Tab IDs are not regenerated while loading, saving, or restarting. Actual
+user mutations persist one complete strictly validated version 1 document
+through the shared atomic-write path.
 
 Migration recovery is not journaled. A process interruption after an atomic
 candidate replacement but before post-write verification or rollback can leave

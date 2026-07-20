@@ -41,6 +41,7 @@ from config_recovery import (
     reverify_source_bytes,
     verify_preserved_artifact,
 )
+from config_schema import migrate_v0_to_v1, validate_v0, validate_v1
 
 JsonScalar: TypeAlias = None | bool | int | float | str
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -198,7 +199,7 @@ class ValidatedMigrationRegistry:
 
     @property
     def is_empty(self) -> bool:
-        """Return whether this is the production legacy-only registry."""
+        """Return whether the registry declares no supported versions or steps."""
 
         return self.current_version is None
 
@@ -283,7 +284,7 @@ PureProblem: TypeAlias = PureExecutionRejected | PureEngineFailure | PureEngineD
 
 @dataclass(frozen=True, slots=True)
 class LegacyV0Current:
-    """Production legacy input remains on the existing constructor path."""
+    """Implicit v0 accepted by an empty or synthetic registry."""
 
     document: JsonObject = field(repr=False)
 
@@ -1313,6 +1314,8 @@ def load_startup_configuration(
     config_path: Path,
     legacy_constructor: Callable[[dict[str, object]], T],
     registry: ValidatedMigrationRegistry,
+    *,
+    legacy_validator: Callable[[dict[str, object]], None] | None = None,
 ) -> StartupConfigurationResult[T]:
     """Perform exactly one initial bounded load before all classification."""
 
@@ -1321,6 +1324,14 @@ def load_startup_configuration(
         return loaded
 
     identity = identify_version(cast(Mapping[str, JsonValue], loaded.mapping))
+    if isinstance(identity, ImplicitLegacyV0) and legacy_validator is not None:
+        try:
+            legacy_validator(loaded.mapping)
+        except LegacyConstructionFailure:
+            return ConfigRecoveryRequired(
+                ConfigLoadFailureCategory.LEGACY_CONSTRUCTION_FAILURE,
+                loaded.snapshot,
+            )
     if registry.is_empty and isinstance(identity, ImplicitLegacyV0):
         try:
             value = legacy_constructor(loaded.mapping)
@@ -1649,7 +1660,34 @@ def migration_startup_route(result: StartupResult) -> MigrationStartupRoute:
     return MigrationStartupRoute.EXIT_ONLY
 
 
-PRODUCTION_REGISTRY_SPEC: Final = RegistrySpec(None, None, (), ())
+def _validate_production_v0(
+    document: Mapping[str, JsonValue],
+) -> ValidationDecision:
+    return ValidationAccepted() if validate_v0(document) else ValidationRejected()
+
+
+def _migrate_production_v0_to_v1(
+    document: Mapping[str, JsonValue],
+) -> StepDecision:
+    candidate = migrate_v0_to_v1(document)
+    return StepApplied(candidate) if candidate is not None else StepRejected()
+
+
+def _validate_production_v1(
+    document: Mapping[str, JsonValue],
+) -> ValidationDecision:
+    return ValidationAccepted() if validate_v1(document) else ValidationRejected()
+
+
+PRODUCTION_REGISTRY_SPEC: Final = RegistrySpec(
+    0,
+    1,
+    (MigrationStep(0, 1, "legacy_to_v1", _migrate_production_v0_to_v1),),
+    (
+        VersionValidator(0, _validate_production_v0),
+        VersionValidator(1, _validate_production_v1),
+    ),
+)
 _production_registry_result = validate_registry(PRODUCTION_REGISTRY_SPEC)
 if not isinstance(_production_registry_result, RegistryReady):
     raise RuntimeError("invalid production migration registry")
