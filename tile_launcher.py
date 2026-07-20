@@ -75,15 +75,28 @@ from PySide6.QtWidgets import (
 )
 
 import debug_scaffold
+from config_migration import (
+    ConfigurationMigrationError,
+    ImplicitLegacyLoaded,
+    LegacyNormalizationSaveFailed,
+    MigrationCommitted,
+    PRODUCTION_REGISTRY,
+    StartupFailureRoute,
+    VersionedCurrent,
+    guarded_legacy_normalization_save,
+    load_startup_configuration,
+    startup_failure_route,
+    startup_notice_message,
+)
 from config_persistence import atomic_write_text
 from config_recovery import (
     ConfigLoadFailureCategory,
-    ConfigLoaded,
     ConfigMissing,
+    ConfigRecoveryRequired,
     ConfigurationLoadError,
+    RawConfigLoaded,
     RecoveryFailed,
     RecoveryFailureCategory,
-    load_config,
     preserve_and_reset,
     recovery_exit_diagnostics,
     recovery_required_diagnostics,
@@ -365,15 +378,35 @@ class LauncherConfig:
         return cfg
 
     @staticmethod
-    def load() -> "LauncherConfig":
-        result = load_config(CFG_PATH, _construct_legacy_configuration)
+    def load(
+        *,
+        on_existing_legacy: (
+            Callable[["LauncherConfig", RawConfigLoaded], None] | None
+        ) = None,
+    ) -> "LauncherConfig":
+        result = load_startup_configuration(
+            CFG_PATH,
+            _construct_legacy_configuration,
+            PRODUCTION_REGISTRY,
+        )
         if isinstance(result, ConfigMissing):
             cfg = LauncherConfig.first_run()
             cfg.save()
             return cfg
-        if isinstance(result, ConfigLoaded):
-            return result.value
-        raise ConfigurationLoadError(result.category, result.snapshot)
+        if isinstance(result, ConfigRecoveryRequired):
+            if startup_failure_route(result) is StartupFailureRoute.Q3_RECOVERY:
+                raise ConfigurationLoadError(result.category, result.snapshot)
+            raise ConfigurationMigrationError.unexpected_success()
+        if isinstance(result, ImplicitLegacyLoaded):
+            cfg = result.value
+            if on_existing_legacy is not None:
+                on_existing_legacy(cfg, result.raw)
+            return cfg
+        if isinstance(result, (VersionedCurrent, MigrationCommitted)):
+            raise ConfigurationMigrationError.unexpected_success()
+        if startup_failure_route(result) is StartupFailureRoute.EXIT_ONLY:
+            raise ConfigurationMigrationError.from_outcome(result)
+        raise ConfigurationMigrationError.unexpected_success()
 
     def serialize(self) -> str:
         """Serialize using the existing unversioned schema and formatting."""
@@ -407,6 +440,19 @@ class LauncherConfig:
 def _construct_legacy_configuration(data: dict[str, object]) -> LauncherConfig:
     validate_legacy_mapping(data)
     return LauncherConfig.from_legacy_mapping(data)
+
+
+def _guarded_existing_legacy_save(
+    config: LauncherConfig,
+    loaded: RawConfigLoaded,
+) -> None:
+    result = guarded_legacy_normalization_save(
+        CFG_PATH,
+        loaded,
+        config.serialize(),
+    )
+    if isinstance(result, LegacyNormalizationSaveFailed):
+        raise ConfigurationMigrationError.from_outcome(result)
 
 
 def _tab_order_state(cfg: LauncherConfig) -> TabOrderState:
@@ -2840,30 +2886,49 @@ def _show_recovery_failure(category: RecoveryFailureCategory) -> None:
     )
 
 
+def _show_migration_failure(error: ConfigurationMigrationError) -> None:
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Icon.Critical)
+    box.setWindowTitle("DesktopTileLauncher")
+    box.setText(startup_notice_message(error.notice_category))
+    exit_button = box.addButton(
+        "Exit",
+        QMessageBox.ButtonRole.RejectRole,
+    )
+    box.setDefaultButton(exit_button)
+    box.setEscapeButton(exit_button)
+    exit_button.setFocus()
+    box.exec()
+
+
 def _resolve_startup_configuration() -> _StartupReady | _StartupExit:
-    result = load_config(CFG_PATH, _construct_legacy_configuration)
-    if isinstance(result, ConfigMissing):
-        config = LauncherConfig.first_run()
-        config.save()
-        return _StartupReady(config)
-    if isinstance(result, ConfigLoaded):
-        config = result.value
-        config.save()
+    try:
+        config = LauncherConfig.load(
+            on_existing_legacy=_guarded_existing_legacy_save,
+        )
+    except ConfigurationMigrationError as error:
+        record_breadcrumb("config_migration_exit", **error.diagnostics)
+        _show_migration_failure(error)
+        return _StartupExit(1)
+    except ConfigurationLoadError as error:
+        category = error.category
+        snapshot = error.snapshot
+    else:
         return _StartupReady(config)
 
     record_breadcrumb(
         "config_recovery_required",
-        **recovery_required_diagnostics(result.category),
+        **recovery_required_diagnostics(category),
     )
-    if _prompt_config_recovery(result.category) is _RecoveryChoice.EXIT:
+    if _prompt_config_recovery(category) is _RecoveryChoice.EXIT:
         record_breadcrumb(
             "config_recovery_exit",
-            **recovery_exit_diagnostics(result.category),
+            **recovery_exit_diagnostics(category),
         )
         return _StartupExit(0)
 
     config = LauncherConfig.first_run()
-    recovery = preserve_and_reset(CFG_PATH, result.snapshot, config.serialize())
+    recovery = preserve_and_reset(CFG_PATH, snapshot, config.serialize())
     if isinstance(recovery, RecoveryFailed):
         record_breadcrumb(
             "config_recovery_failed",

@@ -5,6 +5,13 @@
 ### App Behavior
 - Detect unreadable or corrupt configuration at startup and offer a safe default Exit or an
   explicit preserve-and-reset flow before the launcher mutates configuration state.
+- Add a Qt-free, schema-versioned migration harness while production remains on implicit,
+  unversioned legacy v0 with no registered migration step and no `schema_version` 1 output.
+- Give malformed, explicit-zero, unsupported, and migration-failure outcomes distinct fixed
+  Exit-only handling without changing the existing corrupt-configuration Exit / Preserve and
+  Reset flow.
+- Guard the normal implicit-v0 normalization save with the successfully classified source
+  snapshot so a concurrent replacement is not overwritten by stale legacy state.
 - Add active-tab tile selection with a selected count, Select all, Clear selection, and Done
   controls while preventing tile launches, context-menu changes, and dragging during selection.
 - Refresh selected tile names and icons only after overwrite confirmation; title and favicon
@@ -15,6 +22,15 @@
 ### Security/Privacy
 - Preserve and verify exact corrupt-configuration bytes before reset, keep verified copies in a
   private recovery location, and record only curated failure categories and integer counts.
+- For future registered migrations, preserve and verify the exact source before the first step,
+  guard deterministic candidate replacement, and retain and roll back only after the exact
+  installed candidate is proven and post-write target validation then fails.
+- Treat reload failure, exact-byte mismatch, or later ownership loss as fail-closed Exit-only
+  outcomes with no retention or rollback over the unproven live path; restore only verified
+  recovery bytes while ownership remains proven.
+- Document the non-journaled crash boundary: interruption after candidate replacement can leave
+  the complete candidate installed, and the next startup classifies it normally without guessing
+  or automatically restoring a recovery artifact.
 - Disclose that an explicitly confirmed refresh attempts to contact each selected destination for
   its title and, when a host/domain can be derived, attempts to send that host/domain to Google's
   favicon service; URL import review remains offline.
