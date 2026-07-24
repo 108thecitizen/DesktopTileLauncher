@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from pathlib import Path
@@ -12,6 +11,7 @@ import pytest
 
 import config_migration as migration
 import config_recovery
+import config_schema
 from config_recovery import MAX_CONFIG_BYTES
 
 pytestmark = pytest.mark.unit
@@ -27,6 +27,19 @@ def _validated(spec: migration.RegistrySpec) -> migration.ValidatedMigrationRegi
     result = migration.validate_registry(spec)
     assert isinstance(result, migration.RegistryReady)  # nosec B101
     return result.registry
+
+
+_EMPTY_REGISTRY = _validated(migration.RegistrySpec(None, None, (), ()))
+
+
+def _native_v1_document() -> config_schema.JsonObject:
+    identifiers = iter(
+        (
+            "11111111-1111-4111-8111-111111111111",
+            "22222222-2222-4222-8222-222222222222",
+        )
+    )
+    return config_schema.build_native_v1(lambda: next(identifiers))
 
 
 def _single_step_registry(
@@ -80,7 +93,7 @@ def _forbid_legacy_constructor(_mapping: dict[str, object]) -> object:
     raise AssertionError("migration result must not enter legacy construction")
 
 
-def test_production_empty_registry_keeps_implicit_v0_legacy_only() -> None:
+def test_production_registry_prepares_exactly_v0_to_v1() -> None:
     source: migration.JsonObject = {
         "title": "Legacy",
         "unknown": {"private": "not rendered"},
@@ -88,38 +101,43 @@ def test_production_empty_registry_keeps_implicit_v0_legacy_only() -> None:
 
     result = migration.prepare_migration(source, migration.PRODUCTION_REGISTRY)
 
-    assert isinstance(result, migration.LegacyV0Current)  # nosec B101
-    assert result.document == source  # nosec B101
+    assert isinstance(result, migration.PreparedMigration)  # nosec B101
+    assert result.source_version == 0  # nosec B101
+    assert result.target_version == 1  # nosec B101
+    assert result.step_count == 1  # nosec B101
     assert (
         migration.migration_startup_route(result)
-        is migration.MigrationStartupRoute.LEGACY
+        is migration.MigrationStartupRoute.MIGRATION_REQUIRED
     )
     assert "private" not in repr(result)  # nosec B101
+    assert source == {  # nosec B101
+        "title": "Legacy",
+        "unknown": {"private": "not rendered"},
+    }
 
 
-def test_production_implicit_v0_bypasses_pure_detachment_for_legacy_compatibility(
+def test_production_nonfinite_unknown_fails_before_preservation_or_step(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.json"
     original = b'{"title":"Legacy","ignored":NaN}'
     config_path.write_bytes(original)
 
-    def construct_legacy(mapping: dict[str, object]) -> str:
-        ignored = mapping["ignored"]
-        assert isinstance(ignored, float)  # nosec B101
-        assert math.isnan(ignored)  # nosec B101
-        return "legacy"
-
     result = migration.load_startup_configuration(
         config_path,
-        construct_legacy,
+        _forbid_legacy_constructor,
         migration.PRODUCTION_REGISTRY,
+        legacy_validator=config_recovery.validate_legacy_mapping,
     )
 
-    assert isinstance(result, migration.ImplicitLegacyLoaded)  # nosec B101
-    assert result.value == "legacy"  # nosec B101
+    assert isinstance(result, migration.PureEngineFailure)  # nosec B101
+    assert (  # nosec B101
+        result.category is migration.PureEngineFailureCategory.JSON_DETACHMENT_FAILURE
+    )
+    assert result.stage is migration.PureExecutionStage.SOURCE_VALIDATION  # nosec B101
     assert config_path.read_bytes() == original  # nosec B101
     assert _recovery_files(config_path) == []  # nosec B101
+    assert _failed_candidate_files(config_path) == []  # nosec B101
     assert _temporary_residue(tmp_path) == []  # nosec B101
 
 
@@ -136,7 +154,7 @@ def test_production_implicit_v0_bypasses_pure_detachment_for_legacy_compatibilit
         ),
     ],
 )
-def test_production_explicit_version_never_constructs_or_writes(
+def test_production_unsupported_or_malformed_version_never_constructs_or_writes(
     tmp_path: Path,
     source: bytes,
     expected_category: migration.VersionRejectionCategory,
@@ -183,14 +201,221 @@ def test_positive_explicit_versions_are_identified_exactly(version: int) -> None
     assert result == migration.ExplicitVersion(version)  # nosec B101
 
 
-def test_production_rejects_every_positive_explicit_version_as_newer() -> None:
-    result = migration.prepare_migration(
-        {"schema_version": 1}, migration.PRODUCTION_REGISTRY
+def test_production_accepts_strict_v1_and_rejects_explicit_v2() -> None:
+    current = _native_v1_document()
+
+    accepted = migration.prepare_migration(current, migration.PRODUCTION_REGISTRY)
+    future = deepcopy(current)
+    future["schema_version"] = 2
+    rejected = migration.prepare_migration(future, migration.PRODUCTION_REGISTRY)
+
+    assert isinstance(accepted, migration.VersionedCurrent)  # nosec B101
+    assert accepted.version == 1  # nosec B101
+    assert isinstance(rejected, migration.VersionRejected)  # nosec B101
+    assert rejected.category is migration.VersionRejectionCategory.UNSUPPORTED_NEWER
+    assert rejected.version == 2  # nosec B101
+
+
+def test_production_v0_migrates_transactionally_without_legacy_construction(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    original = (
+        b'{"title":"Legacy","tabs":["Main"],"tiles":[],"unknown":{"retained":true}}'
+    )
+    config_path.write_bytes(original)
+
+    result = migration.load_startup_configuration(
+        config_path,
+        _forbid_legacy_constructor,
+        migration.PRODUCTION_REGISTRY,
+        legacy_validator=config_recovery.validate_legacy_mapping,
     )
 
-    assert isinstance(result, migration.VersionRejected)  # nosec B101
-    assert result.category is migration.VersionRejectionCategory.UNSUPPORTED_NEWER
-    assert result.version == 1  # nosec B101
+    assert isinstance(result, migration.MigrationCommitted)  # nosec B101
+    assert result.target_version == 1  # nosec B101
+    assert config_schema.validate_v1(result.document)  # nosec B101
+    extensions = cast(dict[str, object], result.document["extensions"])
+    assert extensions == {  # nosec B101
+        config_schema.LEGACY_EXTENSION_NAMESPACE: {"unknown": {"retained": True}}
+    }
+    serialized = migration.serialize_deterministically(result.document)
+    assert isinstance(serialized, migration.SerializedDocument)  # nosec B101
+    assert config_path.read_bytes() == serialized.data  # nosec B101
+    assert [path.read_bytes() for path in _recovery_files(config_path)] == [original]
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+    assert _temporary_residue(tmp_path) == []  # nosec B101
+
+
+def test_production_known_incompatible_v0_uses_q3_recovery_without_artifacts(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+    original = b'{"columns":true}'
+    config_path.write_bytes(original)
+
+    result = migration.load_startup_configuration(
+        config_path,
+        _forbid_legacy_constructor,
+        migration.PRODUCTION_REGISTRY,
+        legacy_validator=config_recovery.validate_legacy_mapping,
+    )
+
+    assert isinstance(result, config_recovery.ConfigRecoveryRequired)  # nosec B101
+    assert (  # nosec B101
+        result.category
+        is config_recovery.ConfigLoadFailureCategory.LEGACY_CONSTRUCTION_FAILURE
+    )
+    assert config_path.read_bytes() == original  # nosec B101
+    assert _recovery_files(config_path) == []  # nosec B101
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+    assert _temporary_residue(tmp_path) == []  # nosec B101
+
+
+def test_production_current_v1_startup_is_exact_no_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    document = _native_v1_document()
+    original = json.dumps(document, ensure_ascii=False, separators=(", ", ": ")).encode(
+        "utf-8"
+    )
+    config_path.write_bytes(original)
+    monkeypatch.setattr(migration, "atomic_write_bytes", _forbidden_candidate_writer)
+
+    result = migration.load_startup_configuration(
+        config_path,
+        _forbid_legacy_constructor,
+        migration.PRODUCTION_REGISTRY,
+        legacy_validator=config_recovery.validate_legacy_mapping,
+    )
+
+    assert isinstance(result, migration.VersionedCurrent)  # nosec B101
+    assert result.document == document  # nosec B101
+    assert config_path.read_bytes() == original  # nosec B101
+    assert _recovery_files(config_path) == []  # nosec B101
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+    assert _temporary_residue(tmp_path) == []  # nosec B101
+
+
+def test_production_current_v1_with_lone_surrogate_is_exit_only_and_no_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    document = _native_v1_document()
+    application = cast(dict[str, migration.JsonValue], document["application"])
+    application["title"] = "\ud800"
+    original = json.dumps(document, ensure_ascii=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    assert b"\\ud800" in original  # nosec B101
+    config_path.write_bytes(original)
+    monkeypatch.setattr(migration, "atomic_write_bytes", _forbidden_candidate_writer)
+
+    result = migration.load_startup_configuration(
+        config_path,
+        _forbid_legacy_constructor,
+        migration.PRODUCTION_REGISTRY,
+        legacy_validator=config_recovery.validate_legacy_mapping,
+    )
+
+    assert isinstance(result, migration.PureExecutionRejected)  # nosec B101
+    assert (  # nosec B101
+        result.category
+        is migration.PureExecutionRejectionCategory.SOURCE_VALIDATION_FAILURE
+    )
+    assert result.stage is migration.PureExecutionStage.SOURCE_VALIDATION  # nosec B101
+    assert (  # nosec B101
+        migration.startup_failure_route(result)
+        is migration.StartupFailureRoute.EXIT_ONLY
+    )
+    assert config_path.read_bytes() == original  # nosec B101
+    assert _recovery_files(config_path) == []  # nosec B101
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+    assert _temporary_residue(tmp_path) == []  # nosec B101
+
+
+def test_production_empty_legacy_tab_rejects_after_exact_preservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    original = b'{"title":"Legacy","tabs":[""],"tiles":[]}'
+    config_path.write_bytes(original)
+    monkeypatch.setattr(migration, "atomic_write_bytes", _forbidden_candidate_writer)
+
+    result = migration.load_startup_configuration(
+        config_path,
+        _forbid_legacy_constructor,
+        migration.PRODUCTION_REGISTRY,
+        legacy_validator=config_recovery.validate_legacy_mapping,
+    )
+
+    assert isinstance(  # nosec B101
+        result, migration.MigrationAbortedAfterPreservation
+    )
+    assert isinstance(result.problem, migration.PureExecutionRejected)  # nosec B101
+    assert (  # nosec B101
+        result.problem.category
+        is migration.PureExecutionRejectionCategory.STEP_REJECTION
+    )
+    assert result.problem.stage is migration.PureExecutionStage.STEP  # nosec B101
+    assert result.problem.step_name == "legacy_to_v1"  # nosec B101
+    assert result.authority is migration.ConfigurationAuthority.ORIGINAL  # nosec B101
+    assert result.recovery_copy_count == 1  # nosec B101
+    assert result.failed_candidate_copy_count == 0  # nosec B101
+    assert result.rollback_count == 0  # nosec B101
+    assert config_path.read_bytes() == original  # nosec B101
+    assert [path.read_bytes() for path in _recovery_files(config_path)] == [original]
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+    assert _temporary_residue(tmp_path) == []  # nosec B101
+
+
+def test_production_invalid_applied_output_uses_target_validation_after_preservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    original = b'{"title":"Legacy","tabs":["Main"],"tiles":[]}'
+    config_path.write_bytes(original)
+
+    def invalid_target(
+        _document: Mapping[str, config_schema.JsonValue],
+    ) -> config_schema.JsonObject:
+        return {"schema_version": 1}
+
+    monkeypatch.setattr(migration, "migrate_v0_to_v1", invalid_target)
+    monkeypatch.setattr(migration, "atomic_write_bytes", _forbidden_candidate_writer)
+
+    result = migration.load_startup_configuration(
+        config_path,
+        _forbid_legacy_constructor,
+        migration.PRODUCTION_REGISTRY,
+        legacy_validator=config_recovery.validate_legacy_mapping,
+    )
+
+    assert isinstance(  # nosec B101
+        result, migration.MigrationAbortedAfterPreservation
+    )
+    assert isinstance(result.problem, migration.PureExecutionRejected)  # nosec B101
+    assert (  # nosec B101
+        result.problem.category
+        is migration.PureExecutionRejectionCategory.TARGET_VALIDATION_FAILURE
+    )
+    assert (  # nosec B101
+        result.problem.stage is migration.PureExecutionStage.TARGET_VALIDATION
+    )
+    assert result.problem.step_name == "legacy_to_v1"  # nosec B101
+    assert result.authority is migration.ConfigurationAuthority.ORIGINAL  # nosec B101
+    assert result.recovery_copy_count == 1  # nosec B101
+    assert result.failed_candidate_copy_count == 0  # nosec B101
+    assert result.rollback_count == 0  # nosec B101
+    assert config_path.read_bytes() == original  # nosec B101
+    assert [path.read_bytes() for path in _recovery_files(config_path)] == [original]
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+    assert _temporary_residue(tmp_path) == []  # nosec B101
 
 
 def _step(
@@ -1046,7 +1271,7 @@ def test_guarded_legacy_normalization_save_does_not_overwrite_future_race(
     loaded = migration.load_startup_configuration(
         config_path,
         lambda mapping: dict(mapping),
-        migration.PRODUCTION_REGISTRY,
+        _EMPTY_REGISTRY,
     )
     assert isinstance(loaded, migration.ImplicitLegacyLoaded)  # nosec B101
 
@@ -1424,7 +1649,7 @@ def test_guarded_legacy_normalization_succeeds_for_unchanged_regular_source(
     loaded = migration.load_startup_configuration(
         config_path,
         lambda mapping: dict(mapping),
-        migration.PRODUCTION_REGISTRY,
+        _EMPTY_REGISTRY,
     )
     assert isinstance(loaded, migration.ImplicitLegacyLoaded)  # nosec B101
 
@@ -1451,7 +1676,7 @@ def test_guarded_legacy_normalization_accepts_unchanged_redirected_source(
     loaded = migration.load_startup_configuration(
         config_path,
         lambda mapping: dict(mapping),
-        migration.PRODUCTION_REGISTRY,
+        _EMPTY_REGISTRY,
     )
     assert isinstance(loaded, migration.ImplicitLegacyLoaded)  # nosec B101
 

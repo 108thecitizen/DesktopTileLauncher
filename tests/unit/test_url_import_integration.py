@@ -103,6 +103,10 @@ def _config(*, hidden_tabs: list[str] | None = None) -> LauncherConfig:
         window_y=20,
         window_w=800,
         window_h=600,
+        workspace_name="Custom Workspace",
+        extensions={
+            "io.github.108thecitizen.legacy": {"retained": {"source": "legacy"}}
+        },
     )
 
 
@@ -155,6 +159,11 @@ def test_import_saves_detached_candidate_once_then_commits_in_source_order(
         assert candidate.hidden_tabs is not original.hidden_tabs
         assert candidate.tab_ids is not original.tab_ids
         assert candidate.tab_order is not original.tab_order
+        assert candidate.workspace_id == original.workspace_id
+        assert candidate.workspace_name == "Custom Workspace"
+        assert candidate.tab_extensions is not original.tab_extensions
+        assert candidate.extensions is not original.extensions
+        assert candidate.extensions == original.extensions
         saved.append(candidate)
 
     monkeypatch.setattr(LauncherConfig, "save", fake_save)
@@ -185,6 +194,10 @@ def test_import_saves_detached_candidate_once_then_commits_in_source_order(
         ("Second", "https://second.example.test/"),
     ]
     assert [tile.tab for tile in imported] == ["Work", "Work"]
+    assert [tile.tab_id for tile in imported] == [
+        harness.cfg.tab_ids["Work"],
+        harness.cfg.tab_ids["Work"],
+    ]
     for tile in imported:
         assert tile.icon is None
         assert tile.bg == "#F5F6FA"
@@ -225,8 +238,38 @@ def test_import_into_hidden_tab_never_unhides_or_selects_it(
     assert "Hidden" not in harness.selected_tabs
 
 
+def test_refresh_detached_candidate_preserves_identity_and_extension_state() -> None:
+    original = _config(hidden_tabs=["Hidden"])
+    harness = _MainHarness(original)
+
+    candidate, detached_by_identity = Main._detached_configuration(harness)
+
+    assert candidate is not original
+    assert candidate.workspace_id == original.workspace_id
+    assert candidate.workspace_name == original.workspace_name
+    assert candidate.tab_ids == original.tab_ids
+    assert candidate.tab_order == original.tab_order
+    assert candidate.hidden_tabs == original.hidden_tabs
+    assert candidate.tab_extensions == original.tab_extensions
+    assert candidate.extensions == original.extensions
+    assert candidate.tab_extensions is not original.tab_extensions
+    assert candidate.extensions is not original.extensions
+    assert candidate.tiles[0].tab_id == original.tiles[0].tab_id
+    assert detached_by_identity[id(original.tiles[0])] is candidate.tiles[0]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_category"),
+    (
+        (OSError(_SENSITIVE_PATH), "persistence_failure"),
+        (ValueError("invalid_schema_v1_runtime_state"), "validation_failure"),
+        (ValueError("schema_v1_size_limit_exceeded"), "size_limit_exceeded"),
+    ),
+)
 def test_save_failure_keeps_live_config_and_review_state_without_rebuild(
     monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    expected_category: str,
 ) -> None:
     original = _config()
     original_snapshot = copy.deepcopy(original)
@@ -247,7 +290,7 @@ def test_save_failure_keeps_live_config_and_review_state_without_rebuild(
 
     def fail_save(candidate: LauncherConfig) -> None:
         save_attempts.append(candidate)
-        raise OSError(_SENSITIVE_PATH)
+        raise failure
 
     monkeypatch.setattr(LauncherConfig, "save", fail_save)
     errors: list[tuple[object, str, str]] = []
@@ -275,6 +318,63 @@ def test_save_failure_keeps_live_config_and_review_state_without_rebuild(
     assert _SENSITIVE_URL not in repr(captured)
     assert _SENSITIVE_NAME not in repr(captured)
     assert _SENSITIVE_PATH not in repr(captured)
+    assert captured == [
+        (
+            "url_import_save_failed",
+            {"imported_count": 1, "failure_category": expected_category},
+        )
+    ]
+
+
+def test_actual_over_limit_import_keeps_live_review_and_file_exact(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path = tmp_path / "config.json"
+    original = _config()
+    monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
+    original.save()
+    baseline_bytes = cfg_path.read_bytes()
+    original_snapshot = copy.deepcopy(original)
+    harness = _MainHarness(original)
+    dialog = _Dialog(
+        destination="Work",
+        selections=(_Selection(1, _SENSITIVE_NAME, _SENSITIVE_URL),),
+        results=(
+            tile_launcher.QDialog.DialogCode.Accepted,
+            tile_launcher.QDialog.DialogCode.Rejected,
+        ),
+    )
+    _install_dialog(monkeypatch, dialog)
+    captured = _capture_breadcrumbs(monkeypatch)
+    errors: list[tuple[object, str, str]] = []
+    monkeypatch.setattr(
+        tile_launcher.QMessageBox,
+        "critical",
+        lambda parent, title, text: errors.append((parent, title, text)),
+    )
+    monkeypatch.setattr(tile_launcher, "MAX_CONFIG_BYTES", len(baseline_bytes))
+
+    Main.import_urls(harness)
+
+    assert harness.cfg is original
+    assert harness.cfg == original_snapshot
+    assert cfg_path.read_bytes() == baseline_bytes
+    assert harness.rebuild_count == 0
+    assert harness.selected_tabs == []
+    assert dialog.exec_count == 2
+    assert dialog.selected_imports_count == 1
+    assert captured == [
+        (
+            "url_import_save_failed",
+            {"imported_count": 1, "failure_category": "size_limit_exceeded"},
+        )
+    ]
+    assert len(errors) == 1
+    assert "No tiles were imported" in errors[0][2]
+    assert _SENSITIVE_URL not in repr((captured, errors))
+    assert _SENSITIVE_NAME not in repr((captured, errors))
+    assert list(tmp_path.glob(".config.json.*.tmp")) == []
 
 
 def test_cancel_makes_no_config_or_ui_mutations(
