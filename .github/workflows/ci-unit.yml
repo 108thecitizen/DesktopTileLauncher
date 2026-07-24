@@ -30,7 +30,7 @@ jobs:
         if: runner.os == 'Linux'
         run: python -c "import ctypes; ctypes.CDLL('libEGL.so.1'); print('libEGL loaded OK')"
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
