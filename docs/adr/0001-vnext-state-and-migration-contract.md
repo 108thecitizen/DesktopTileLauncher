@@ -991,7 +991,516 @@ migration code, schema activation, UI, dependencies, packaging, workflows, or re
 
 ### Deterministic schema-v1-to-v2 migration
 
-*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+This subsection defines the pure deterministic transformation from one detached, fully
+validated strict schema-v1 logical graph into the complete committed URL-only schema-v2
+graph. It is authoritative over conflicting older generic migration prose. It does not
+implement or register schema version 2.
+
+Checkpoint-5 responsibility ends when the complete candidate has passed the committed
+schema-v2 persisted validator without mutation. Canonical byte serialization, size
+enforcement, and filesystem transaction behavior are outside this subsection. The existing
+Q4 migration harness and transaction coordinator remain the integration boundary for those
+concerns; they are existing infrastructure, not work redefined here.
+
+#### Source precondition and preserved state
+
+The source MUST first pass the complete strict schema-v1 validator. Migration MUST NOT
+accept a partial, repaired, coerced, or merely recognizable v1 mapping. Strict v1 supplies
+exactly one Workspace, one or more Tabs, zero or more root Tile occurrences, every required
+nullable value explicitly, and the closed field sets defined by the implemented v1
+contract.
+
+The transform MUST preserve exactly:
+
+- `application.title`;
+- `application.default_workspace_id`;
+- the existing Workspace `id`, current `name`, `tab_order`, and empty `extensions`;
+- every Tab `id`, `workspace_id`, `name`, `visibility`, and empty `extensions`;
+- every valid decoded scalar, null, empty string, whitespace-only string, unsupported
+  string, exact integer, and Boolean according to the committed schema-v2 domains; and
+- every reference and semantically ordered sequence identified below.
+
+The Workspace name is independent from `application.title`. Migration MUST NOT derive,
+reset, replace, or otherwise modify the current Workspace name. In particular,
+`Default Workspace` is a v0-to-v1 and native-v1 construction default, not a v1-to-v2
+migration value.
+
+The existing strict-v1 visible-Tab invariant guarantees that at least one Tab in the sole
+default Workspace is visible. Initializing every migrated Tab with active lifecycle
+therefore satisfies the committed schema-v2 default-Workspace active-visible invariant.
+
+#### Complete candidate construction
+
+The schema-v2 root MUST contain exactly the committed root fields. Its non-extension source
+mapping is:
+
+| Schema-v1 source | Schema-v2 destination |
+| --- | --- |
+| `schema_version: 1` | `schema_version: 2` |
+| `application.title` | `application.title`, unchanged |
+| `application.default_workspace_id` | `application.default_workspace_id`, unchanged |
+| `application.extensions` | `application.extensions`, unchanged as `{}` |
+| sole Workspace definition | one preserved Workspace definition |
+| root Tab definitions | the same Tab definitions, emitted as specified below |
+| each distinct root Tile occurrence | one generated Resource and one generated Placement |
+| root window/layout fields | one generated Workspace/window DeviceBinding |
+| each Tile's launch fields | one generated Placement/launch DeviceBinding |
+| root `extensions` | the deterministic result required from the later Extensions checkpoint |
+
+No recognized strict-v1 scalar is discarded. The v1 `tiles`, `columns`, `auto_fit`, and
+window-geometry root keys are absent from the closed v2 root only because their complete
+values are transformed into the Resource, Placement, order, and DeviceBinding structures
+defined here.
+
+The Application MUST be constructed as:
+
+```text
+Application = {
+  title: <exact v1 application.title>,
+  default_workspace_id: <exact v1 application.default_workspace_id>,
+  extensions: {}
+}
+```
+
+The sole Workspace MUST be constructed as:
+
+```text
+Workspace = {
+  id: <exact v1 Workspace id>,
+  name: <exact current v1 Workspace name>,
+  tab_order: <independent copy of exact v1 Workspace tab_order>,
+  extensions: {}
+}
+```
+
+Every existing Tab MUST be constructed as:
+
+```text
+Tab = {
+  id: <exact v1 Tab id>,
+  workspace_id: <exact v1 Tab workspace_id>,
+  name: <exact v1 Tab name>,
+  visibility: <exact v1 Tab visibility>,
+  lifecycle: "active",
+  view_mode: "display",
+  display_filter: ["new", "in_use"],
+  display_order: <that Tab's migrated Placement IDs in existing per-Tab Tile order>,
+  kanban_order: {
+    new: [],
+    in_use: <those same Placement IDs in the same relative source order>,
+    archived: []
+  },
+  extensions: {}
+}
+```
+
+`display_order` and `kanban_order.in_use` MUST be independently constructed arrays. Neither
+may be an alias, derivation at read time, or substitute for the other. This initialization
+applies identically to visible, hidden, nonempty, and empty Tabs. An empty Tab MUST use
+`display_order: []` and three independently present empty Kanban queues.
+
+For every distinct strict-v1 Tile occurrence, migration MUST construct exactly one Resource:
+
+```text
+Resource = {
+  id: <generated Resource EntityUUID>,
+  kind: "url",
+  target: {
+    url: <exact Tile url>
+  },
+  default_label: <exact Tile name>,
+  default_icon: <mapped Tile icon>,
+  extensions: {}
+}
+```
+
+The exact icon mapping is:
+
+- a Tile `icon` of null becomes `default_icon: null`; and
+- every string Tile `icon`, including an empty or whitespace-only string, becomes
+  `default_icon: {"kind": "legacy_string", "value": <exact Tile icon>}`.
+
+Migration MUST construct exactly one paired Placement for that same occurrence:
+
+```text
+Placement = {
+  id: <generated Placement EntityUUID>,
+  resource_id: <that occurrence's generated Resource id>,
+  tab_id: <exact preserved Tile tab_id>,
+  label_override: null,
+  icon_override: null,
+  background_color: <exact Tile bg>,
+  workflow_status: "in_use",
+  extensions: {}
+}
+```
+
+Equal URLs, equal field values, equal non-ID fields, and completely equal Tile objects
+remain distinct occurrences. Migration MUST NOT deduplicate, merge, share, or identify
+Resources or Placements by URL, content, hash, normalization, or any other Tile value.
+
+For strict v1, let `N` be the existing Tab count and `T` be the root Tile-occurrence count.
+The exact schema-v2 cardinalities are:
+
+```text
+Workspaces     = 1
+Tabs           = N, where N >= 1
+Resources      = T
+Placements     = T
+DeviceBindings = 1 + T
+```
+
+`T` MAY be zero. A zero-Tile profile still preserves every Tab and creates the one required
+Workspace/window DeviceBinding.
+
+#### Portable-fallback DeviceBinding construction
+
+Migration MUST construct exactly one complete portable-fallback Workspace/window binding:
+
+```text
+WorkspaceWindowBinding = {
+  id: <generated DeviceBinding EntityUUID>,
+  subject_kind: "workspace",
+  subject_id: <exact preserved Workspace id>,
+  binding_kind: "window",
+  applicability: {
+    kind: "portable_fallback"
+  },
+  settings: {
+    columns: <exact v1 columns>,
+    auto_fit: <exact v1 auto_fit>,
+    window_x: <exact v1 window_x>,
+    window_y: <exact v1 window_y>,
+    window_w: <exact v1 window_w>,
+    window_h: <exact v1 window_h>
+  },
+  extensions: {}
+}
+```
+
+All four geometry values MUST be preserved when `auto_fit` is true. Zero, negative, null,
+and other valid exact-integer values MUST NOT be normalized or discarded.
+
+Migration MUST construct exactly one complete portable-fallback Placement/launch binding
+for every migrated Placement:
+
+```text
+PlacementLaunchBinding = {
+  id: <generated DeviceBinding EntityUUID>,
+  subject_kind: "placement",
+  subject_id: <that occurrence's generated Placement id>,
+  binding_kind: "launch",
+  applicability: {
+    kind: "portable_fallback"
+  },
+  settings: {
+    browser: <exact Tile browser>,
+    chrome_profile: <exact Tile chrome_profile>,
+    open_target: <exact Tile open_target>
+  },
+  extensions: {}
+}
+```
+
+This binding is required even when `browser` and `chrome_profile` are null or empty and
+`open_target` happens to match a current runtime default. Null, empty, whitespace-only,
+unsupported, and otherwise unusual valid launch combinations MUST remain exact. Migration
+MUST NOT generate a device-specific binding or an external device key and MUST NOT inspect
+the machine performing migration.
+
+#### Tile occurrence locators and deterministic construction orders
+
+For migration purposes, root schema-v1 `tiles` supplies one stable ordered subsequence for
+each Tab. The relative interleaving of occurrences owned by different Tabs has no separate
+schema-v1 user-visible meaning and is not a sequence represented in schema v2. Two v1
+graphs that differ only in cross-Tab Tile interleaving, while retaining every Tab's stable
+subsequence, are logically equivalent for this transform.
+
+Migration MUST first group Tile occurrences by their exact preserved `tab_id`, retaining
+their relative order from root `tiles`. It MUST NOT sort or reorder occurrences within a
+Tab. The locator of an occurrence is:
+
+```text
+(preserved tab_id, zero-based per-Tab ordinal)
+```
+
+The ordinal is the count of preceding occurrences for that exact Tab in its stable
+root-`tiles` subsequence. It is independent from all Tile field values.
+
+ID-allocation priority and candidate emission order are intentionally separate:
+
+1. **ID-allocation priority.** Order locators first by canonical lowercase Tab UUID text in
+   ascending ASCII/UTF-8 byte order, then by numeric per-Tab ordinal in ascending order.
+   Canonical UUID text is ASCII, so byte order and code-point order are identical and no
+   locale participates. This ordering controls only which entity retains a colliding UUID
+   candidate; it MUST NOT repair or reorder a Tab's semantic Tile sequence.
+2. **Candidate emission order.** Walk Tabs in preserved `Workspace.tab_order`; within each
+   Tab, walk occurrences by ascending per-Tab ordinal.
+
+The schema-v2 definition arrays MUST be constructed in this exact order:
+
+- emit the sole Workspace;
+- emit Tabs in preserved `Workspace.tab_order`;
+- emit Resources in candidate emission order;
+- emit Placements in candidate emission order; and
+- emit DeviceBindings with the Workspace/window binding first, followed by
+  Placement/launch bindings in candidate emission order.
+
+Root-array position remains semantically irrelevant to identity, ownership, priority,
+matching, DeviceBinding selection, and runtime order. These construction orders exist only
+to make the migration result deterministic.
+
+#### Generated UUIDv5 namespace, names, and allocation
+
+All generated Resource, Placement, and DeviceBinding IDs MUST use the single permanently
+owned migration namespace literal:
+
+```text
+8cdeb2d4-8211-5078-9c60-90d397366383
+```
+
+This namespace was derived once as UUIDv5 under the standard `NAMESPACE_URL` from this exact
+UTF-8 string:
+
+```text
+https://github.com/108thecitizen/DesktopTileLauncher/uuid-namespace/schema-v1-to-v2
+```
+
+The fixed UUID literal is normative. The derivation records provenance only. A repository
+rename, repository-URL change, later recomputation, or namespace-library change MUST NOT
+change the namespace literal.
+
+For each retry attempt, UUIDv5 names MUST use exactly one of these forms:
+
+```text
+dtl:migration:v1-to-v2:entity:resource:tab:<tab-id>:ordinal:<n>:retry:<r>
+
+dtl:migration:v1-to-v2:entity:placement:tab:<tab-id>:ordinal:<n>:retry:<r>
+
+dtl:migration:v1-to-v2:entity:device-binding:workspace-window:workspace:<workspace-id>:retry:<r>
+
+dtl:migration:v1-to-v2:entity:device-binding:placement-launch:placement:<placement-id>:retry:<r>
+```
+
+Actual names contain no whitespace or newline. `tab-id`, `workspace-id`, and
+`placement-id` are canonical lowercase UUID text. `n` and `r` are unsigned ASCII decimal
+without leading zeroes; zero is exactly `0`. `retry:0` is the initial attempt. The colon is
+an unambiguous delimiter and no escaping is used because no variable field can contain a
+colon.
+
+No URL, label, icon, background color, browser or profile value, extension key or value,
+path, content hash, device value, locale, clock, random value, process state, filesystem
+state, or network input may enter a UUIDv5 name.
+
+Before generating any ID, migration MUST reserve the preserved Workspace ID and every
+preserved Tab ID in one global used-ID set. It MUST then allocate generated IDs in these
+fixed family phases:
+
+1. Resource IDs in ID-allocation priority.
+2. Placement IDs in ID-allocation priority.
+3. The Workspace/window DeviceBinding ID.
+4. Placement/launch DeviceBinding IDs in ID-allocation priority.
+
+Every accepted generated ID immediately enters the same global used-ID set. Every candidate
+MUST be a canonical UUIDv5 EntityUUID and MUST be checked against every preserved and
+previously accepted generated ID across all entity types.
+
+For each generated entity, migration MUST try exactly `retry:0` through `retry:31`, for
+32 total candidates, in numeric retry order. A collision advances to the next retry name.
+Failure to produce a valid UUIDv5 candidate or exhaustion of all 32 candidates rejects the
+entire transformation. There is no random, clock-based, device-based, process-based,
+filesystem-based, network-based, or unbounded fallback.
+
+#### Identity consequences
+
+The locator identifies a migration-time occurrence slot, not Tile content. Consequently:
+
+- equal occurrences in one Tab remain distinct because their per-Tab ordinals differ;
+- equal occurrences in different Tabs remain distinct because their preserved Tab IDs
+  differ;
+- changing Tile field values at the same Tab and ordinal does not change generated IDs;
+- inserting or removing an earlier occurrence in one Tab shifts the locators of later
+  occurrences in that Tab;
+- a within-Tab reorder may associate ordinal-derived IDs with different content;
+- moving a Tile between Tabs before migration changes its locator and may shift later
+  ordinals in both the source and destination Tabs;
+- a cross-Tab-only interleaving change does not change locators, allocation priority,
+  candidate emission order, or generated IDs; and
+- changing only `Workspace.tab_order` changes the preserved Tab order and candidate emission
+  order, but does not change locator-based ID allocation.
+
+Schema v1 has no Tile identity from which content identity could be preserved across every
+alternative reorder, insertion, removal, or cross-Tab move. After the completed schema-v2
+candidate is accepted, every generated ID is an ordinary immutable persisted entity
+identity. It MUST NOT be recomputed after edits, reorders, Placement moves, or any other
+schema-v2 operation.
+
+#### Existing URL refresh preservation
+
+Migration creates one Resource and one Placement for every legacy Tile, so migrated legacy
+refresh remains occurrence-specific. The committed ownership mapping preserves the current
+operation as follows:
+
+- URL, default label, and default icon belong to the Resource.
+- Tab membership, background color, workflow status, and Display/Kanban memberships and
+  orders belong to the Placement and its owning Tab.
+- Browser, Chrome profile, and open target belong to the Placement's launch DeviceBinding.
+- A successful equivalent refresh changes only the selected Placement's referenced
+  Resource `default_label` and `default_icon`.
+- Null Placement label and icon overrides allow those refreshed Resource defaults to remain
+  effective.
+- Refresh does not change the Resource URL; Placement ownership, background color, workflow
+  status, membership, or order; Tab state; or any DeviceBinding setting.
+
+Under the committed Resource/Placement inheritance contract, a future shared-Resource
+default update affects every Placement of that Resource whose corresponding override is
+null. The later runtime command, selection, confirmation, and stale-check protocol for
+genuinely shared Resources remains deferred; this migration subsection does not redefine
+it.
+
+#### Logical replay equivalence
+
+For this transform, the following are not part of the validated logical v1 graph and MUST
+NOT influence candidate construction:
+
+- JSON whitespace or line endings;
+- escape spelling that decodes to the same Unicode string;
+- JSON object-member order;
+- root Tab-definition-array order;
+- cross-Tab-only Tile interleaving that preserves every per-Tab subsequence;
+- process state or locale; and
+- the current device, hardware, display, installed browsers, or discovered profiles.
+
+The following are meaningful and MUST be preserved:
+
+- decoded scalar values;
+- preserved entity IDs and references;
+- `Workspace.tab_order`;
+- every Tab's stable Tile-occurrence subsequence;
+- every migration default defined here;
+- every membership and queue order;
+- every DeviceBinding and setting; and
+- array order inside opaque Extensions values.
+
+Reprocessing the same validated logical schema-v1 graph in a fresh process MUST reproduce
+every generated ID, scalar field, reference, membership, default, DeviceBinding, required
+Extensions initialization, and deterministic construction-array order.
+
+Deterministic graph construction composed with the later canonical serializer MUST produce
+the issue-required byte-equivalent canonical output. This subsection does not define JSON
+object-member order, escaping, whitespace, final newline, encoding mechanics, or any other
+byte-serialization rule.
+
+#### Extensions dependency
+
+Strict v1 requires Application, Workspace, and Tab `extensions` to be empty objects.
+Migration MUST preserve each as its required independent `{}` value. Every generated
+Resource, Placement, and DeviceBinding MUST likewise initialize `extensions: {}`.
+
+This checkpoint does not decide the destination or reserved-key conflict policy for the
+required schema-v1 root `extensions` object, which may be empty or nonempty.
+A later issue-#118
+documentation checkpoint MUST supply one deterministic schema-v1 root Extensions result
+that:
+
+- preserves the complete logical strict-JSON legacy value;
+- does not seed identity or change ID-allocation priority;
+- does not supply, override, alias, or weaken a canonical field, reference, or invariant;
+- is independent of source formatting and JSON object-member order; and
+- is incorporated into the detached candidate before complete schema-v2 validation.
+
+An unresolved required root Extensions result leaves no complete candidate eligible for
+serialization or persistence. This dependency blocks implementation, registration,
+activation, and a claim that mapping is complete for every valid profile with nonempty root
+Extensions. It does not block documenting or committing this checkpoint.
+
+#### Validation and fail-closed boundary
+
+The migration contract separates four stages:
+
+1. Parse and fully validate strict schema v1.
+2. Construct a pure, detached, deterministic candidate, including the later-defined root
+   Extensions result.
+3. Validate the complete candidate using the committed schema-v2 persisted validator.
+4. In later documentation checkpoints, canonically serialize, enforce the overall candidate
+   size limit, and pass the result through the existing guarded filesystem transaction.
+
+Checkpoint-5 success ends after stage 3. For an original implicit-v0 document, stage 1 for
+this transform receives the validated in-memory output of the existing consecutive
+v0-to-v1 step. The intermediate v1 document is never persisted. This subsection does not
+define a direct v0-to-v2 transform or modify the existing Q4 harness or transaction
+coordinator.
+
+The complete candidate MUST pass, without mutation, the exact integrated persisted
+validation dependency order committed under Portable DeviceBindings:
+
+1. Validate all committed closed shapes plus both DeviceBinding variants, applicability,
+   settings, and `ExternalDeviceKey` domains; required fields; strict types; null rules;
+   literal discriminators; permitted variant pairings; and Extensions.
+2. Validate every `display_filter` value, uniqueness, and canonical workflow order.
+3. Validate `EntityUUID` syntax for every entity ID, reference, and order member, then
+   common global entity-ID uniqueness.
+4. Resolve the default Workspace, Workspace/Tab, Placement/Tab, Placement/Resource, and
+   every DeviceBinding subject to its exact required entity type.
+5. Validate Workspace `tab_order` and Tab `display_order` completeness and uniqueness.
+6. Validate Workspace and Tab name uniqueness and the default-Workspace active-visible
+   invariant.
+7. Resolve Kanban members to Placements owned by the exact Tab.
+8. Validate Kanban uniqueness, disjointness, exact union, and workflow-status agreement.
+9. Validate exact DeviceBinding selector uniqueness.
+
+Persisted validation ends after step 9. Runtime DeviceBinding selection and Display or
+Kanban projection MUST NOT be added to, substituted for, or treated as validation.
+
+Every failure rejects rather than repairs. Migration MUST NOT:
+
+- mutate the source graph or original source bytes;
+- normalize, trim, parse, validate, or rewrite a URL, color, icon, browser, profile, or
+  launch value beyond the committed type domains;
+- discover devices, browsers, profiles, paths, displays, or other platform state;
+- sort a semantically ordered per-Tab sequence;
+- infer identities, references, positions, defaults, or memberships beyond this exact
+  contract;
+- deduplicate Tile occurrences;
+- drop entities or extension data; or
+- publish, persist, or accept a partial candidate.
+
+Collision exhaustion, impossible mapping, an unresolved Extensions result, or any complete
+schema-v2 validation failure leaves no candidate eligible for serialization or
+persistence. Already-valid schema v2 is validated as current state and MUST NOT be replayed
+through the v1-to-v2 transform.
+
+Migration diagnostics MAY contain only later-approved fixed event, stage, or category
+names; schema-version numbers; and bounded non-sensitive counts. They MUST NOT contain
+source or candidate bytes, field values, URLs, labels, icons, colors, browser or profile
+values, entity IDs, UUID input names, paths, filenames, extension contents, exception text,
+or recovery-artifact names.
+
+#### Forward references and exclusions
+
+Later documentation checkpoints within issue #118 retain responsibility for:
+
+- duplicate-member and parser-failure taxonomy;
+- final diagnostic category names;
+- canonical serialization and byte layout;
+- overall candidate-size enforcement;
+- complete root-Extensions routing and reserved-key conflicts;
+- preservation-copy publication, guarded replacement, reload, and candidate verification;
+- rollback, recovery, cleanup, ownership proofs, and interruption behavior; and
+- final implementation-slice division and changelog or audit work.
+
+The following remain outside this checkpoint or outside issue #118:
+
+- runtime migration implementation, registration, or schema-v2 activation;
+- native-v2 missing/reset construction and generic new-entity defaults;
+- image, file, document, application, shortcut, folder, or other non-URL targets;
+- ImportBatch, staging, and future M2 import mechanics;
+- runtime, Kanban, Workspace, or multi-placement UI;
+- device enrollment, key issuance, discovery, synchronization, and cross-device
+  continuity; and
+- dependencies, packaging, workflows, and releases.
+
+This checkpoint creates no `Q6` label or implementation boundary.
 
 ### Migration safety and failure behavior
 
