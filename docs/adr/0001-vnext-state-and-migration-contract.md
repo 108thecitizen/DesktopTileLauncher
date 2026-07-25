@@ -697,7 +697,297 @@ contract.
 
 ### Portable DeviceBindings
 
-*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+#### Scope and authoritative precedence
+
+For schema version 2, this subsection is authoritative for DeviceBinding representation,
+subjects, applicability, settings, matching, precedence, identity, references, uniqueness,
+and lifecycle. It MUST control over conflicting older generic ADR discussion, including
+older discussion of a required direct `device_key`, Resource bindings, local-origin
+bindings, image targets, or additional subject and binding kinds.
+
+A DeviceBinding supplies one complete set of settings for one supported subject under one
+applicability selector. The only supported combinations are Workspace/window settings and
+Placement/launch settings. Application, Tab, Resource, and non-URL targets MUST NOT be
+DeviceBinding subjects. Browser, Chrome-profile, and open-target state belongs only to a
+Placement/launch DeviceBinding; it MUST NOT appear in Resource or Placement. Resource
+continues to own the portable URL target, while Placement owns the launch context selected
+through its bindings.
+
+Schema-v2 persisted-graph validity MUST NOT depend on the current display, window manager,
+hardware, installed browsers, installed profiles, device enrollment, or any discovery
+result. No validation rule in this subsection performs platform inspection.
+
+#### Closed persisted shapes
+
+Every displayed key is required and MUST use the exact spelling shown. Both DeviceBinding
+variants, both `DeviceApplicability` variants, `WindowSettings`, and `UrlLaunchSettings` are
+closed objects. An unknown direct key in any of them makes the candidate invalid.
+
+```text
+DeviceBinding =
+    WorkspaceWindowBinding
+  | PlacementLaunchBinding
+
+WorkspaceWindowBinding = {
+  id: EntityUUID,
+  subject_kind: "workspace",
+  subject_id: EntityUUID,
+  binding_kind: "window",
+  applicability: DeviceApplicability,
+  settings: WindowSettings,
+  extensions: Extensions
+}
+
+PlacementLaunchBinding = {
+  id: EntityUUID,
+  subject_kind: "placement",
+  subject_id: EntityUUID,
+  binding_kind: "launch",
+  applicability: DeviceApplicability,
+  settings: UrlLaunchSettings,
+  extensions: Extensions
+}
+
+DeviceApplicability =
+    {
+      kind: "portable_fallback"
+    }
+  | {
+      kind: "device_specific",
+      device_key: ExternalDeviceKey
+    }
+
+WindowSettings = {
+  columns: integer,
+  auto_fit: Boolean,
+  window_x: integer | null,
+  window_y: integer | null,
+  window_w: integer | null,
+  window_h: integer | null
+}
+
+UrlLaunchSettings = {
+  browser: string | null,
+  chrome_profile: string | null,
+  open_target: "tab" | "window"
+}
+
+ExternalDeviceKey = non-empty UTF-8-encodable Unicode string
+```
+
+The exact subject, binding, and settings combinations displayed above are the only valid
+combinations. A Workspace subject with launch settings, a Placement subject with window
+settings, or any other discriminator or settings combination is invalid.
+
+Only DeviceBinding itself has `extensions`. Applicability and settings objects MUST NOT
+contain `extensions`. DeviceBinding `settings`, `applicability`, and `extensions` MUST NOT
+be null. Among direct fields in the applicability and settings shapes, JSON null is
+permitted only for the four window-geometry fields and the two launch-selection fields
+shown as nullable above.
+
+#### Window-setting value domain
+
+`columns` accepts every exact JSON integer, including zero and negative values. A JSON
+Boolean MUST NOT satisfy `columns` or any of the four window-geometry integer alternatives.
+`auto_fit` accepts exactly a JSON Boolean.
+
+Each of `window_x`, `window_y`, `window_w`, and `window_h` independently accepts either any
+exact JSON integer or JSON null. Validation MUST NOT impose positivity, range, monitor,
+coordinate, dimension, display, window-manager, hardware, or other platform-validity
+constraints. Geometry remains valid and MUST be preserved when `auto_fit` is true, even if
+the current runtime does not apply it.
+
+These domains preserve every strict schema-v1 window-setting value. They do not establish
+migration construction or defaults; checkpoint 5 owns deterministic binding construction
+and all migration defaults.
+
+#### URL-launch-setting value domain
+
+`browser` and `chrome_profile` independently accept JSON null or any UTF-8-encodable Unicode
+string. Empty and whitespace-only strings are valid and distinct from null. Every
+browser/profile combination is valid, including a profile paired with a null, empty,
+whitespace-only, or unsupported browser. `open_target` accepts only the exact,
+case-sensitive values `tab` and `window`.
+
+Validation MUST NOT perform browser or profile discovery, path checking, trimming,
+normalization, compatibility checking, default-browser detection, or platform inspection.
+Unsupported browser and profile values remain valid persisted state.
+
+When a device-specific DeviceBinding is selected by exact device-key match, its complete
+`settings` object is used as a whole. If the corresponding portable-fallback binding
+exists, the selected object's complete `settings` object replaces that fallback's complete
+`settings` object. This rule applies to both supported DeviceBinding variants. There is no
+field-by-field merge or inheritance. Every value in the selected settings object—including
+null window geometry and a null `browser` or `chrome_profile`—is a supplied persisted
+value; null never means inherit from the portable fallback.
+
+#### External device keys and applicability
+
+An `ExternalDeviceKey` is an opaque application identifier, not a secret, credential, raw
+hardware serial number, or other raw hardware identifier. It is a separate identity domain
+from `EntityUUID`.
+
+External-device-key comparison uses exact decoded-string equality and is case-sensitive.
+Validation and matching MUST NOT trim, normalize, case-fold, apply locale processing, or
+reinterpret the value. The empty string is invalid; a whitespace-only string is
+deliberately valid at the persistence boundary. Future device enrollment or key issuance
+MAY generate a narrower subset, but MUST NOT narrow the schema-v2 persisted domain.
+
+External device keys do not participate in global entity-ID uniqueness. A UUID-looking
+device key remains in the external-key domain and does not collide with an entity ID.
+Identical external device keys MAY occur on bindings for different subjects.
+
+A portable-fallback applicability has no `device_key`. A device-specific applicability
+requires a valid `device_key`. JSON null, an empty string, or a sentinel string MUST NOT
+represent portable fallback. There is no persisted `not_applicable` discriminator or
+placeholder. A device-specific binding is selected only when its key exactly matches the
+executing external device key; otherwise the binding remains preserved but unselected.
+Exact key issuance and device enrollment remain outside this schema contract.
+
+#### Absence, selectors, and runtime precedence
+
+`device_bindings: []` is valid. Bindings are optional for every supported Workspace and
+Placement subject. Absence is the only representation of no binding; there is no generic
+persisted no-op binding variant. Every present binding supplies its complete settings
+object. A present binding remains persistently distinct from absence even when its current
+runtime effect happens to equal a platform default.
+
+The selector tuple for a binding is:
+
+```text
+(subject_kind, subject_id, binding_kind, applicability-selector)
+```
+
+For a portable fallback, `applicability-selector` is the constant
+`portable_fallback`. For a device-specific binding, it is `device_specific` plus the exact
+`ExternalDeviceKey`. At most one DeviceBinding may exist for each selector tuple. Duplicate
+selectors are invalid regardless of differing binding IDs, settings, or Extensions
+values. Extensions MUST NOT affect selector equality or make a duplicate valid.
+
+After the complete persisted graph has passed validation, runtime selection for one subject
+MUST use this precedence:
+
+1. Select the device-specific binding whose key exactly matches the executing external
+   device key.
+2. If there is no exact match, select the portable fallback.
+3. If there is no portable fallback, select no binding.
+
+If runtime has no executing external device key, it MUST skip exact-device matching and
+select the portable fallback or no binding. Root-array order has no identity, ownership,
+priority, matching, or tie-breaking meaning. A graph with duplicate selectors is invalid
+and MUST be rejected before runtime selection; runtime MUST NOT choose the first entry,
+ignore a duplicate, or fall back.
+
+“Portable” describes fallback selection scope. It does not guarantee that a browser,
+profile, geometry, or other supplied setting works identically on every platform.
+
+#### Identity, references, and lifecycle
+
+Every DeviceBinding `id` follows the committed `EntityUUID` rules and participates in
+global entity-ID uniqueness. Every `subject_id` MUST resolve exactly once to the entity type
+required by its tagged variant. A dangling or multiply resolved subject reference is
+invalid and MUST NOT be inferred, replaced, or repaired.
+
+Settings are embedded values, not shared entities. A DeviceBinding supplies settings only
+to its one subject. Bindings do not inherit from another Workspace, Placement, Resource, or
+binding.
+
+Bindings for nonmatching devices, hidden Tabs, archived Tabs, and inactive views MUST be
+preserved. Hide, Show, Archive, Restore, workflow-status changes, Display or Kanban
+reorders, display-filter changes, view-mode changes, Resource edits, and unrelated saves
+MUST NOT mutate bindings.
+
+Moving a Placement between Tabs retains the Placement ID and every portable and
+device-specific launch binding unchanged. Discard MUST remove every DeviceBinding that
+references the discarded Placement in the same coordinated valid mutation. It MUST NOT
+remove the referenced Resource or another Placement. Validation rejects a dangling binding
+but MUST NOT perform implicit cleanup.
+
+This dependent-DeviceBinding cleanup is part of the same coordinated Discard mutation. The
+earlier Placement-only Discard boundary prohibits deleting the referenced Resource or other
+Placements; it does not permit retaining a DeviceBinding whose subject would become
+dangling.
+
+A true Placement-duplication operation MUST copy every launch binding belonging to the
+source Placement, including its portable fallback and every device-specific binding. Each
+copy is a new DeviceBinding entity with a new globally unique ID and the duplicate
+Placement as its subject. Applicability, settings, and Extensions values MUST be copied
+exactly; DeviceBinding identity MUST NOT be shared between the source and duplicate. If the
+source Placement has no bindings, duplication MUST synthesize none.
+
+This duplication rule applies only to an operation that explicitly duplicates a Placement.
+It does not define binding initialization when adding another Placement of an existing
+Resource, importing content, or performing another future creation operation.
+
+Workspace rename and reorder preserve every window binding. Workspace-copy behavior
+remains deferred because no approved copy operation exists. If a future copy operation
+copies bindings, every copy must receive a new DeviceBinding identity; which bindings are
+copied requires that operation's contract.
+
+A future Workspace-removal operation must explicitly remove the Workspace's window
+bindings while separately satisfying the committed default-Workspace and Tab-ownership
+invariants. DeviceBinding cleanup MUST NOT create an implicit Tab or Placement cascade.
+
+#### Extensions
+
+Every DeviceBinding `extensions` value MUST use the committed required Extensions type. It
+MUST be present, MUST use `{}` when empty, and MUST NOT be null. Nested applicability and
+settings objects have no Extensions field.
+
+Extensions are opaque and MUST NOT change or supply a subject pairing, applicability,
+selector equality, matching result, precedence rule, identity, reference, duplicate
+detection rule, or settings interpretation.
+
+#### Integrated persisted-validation dependency order
+
+For a parsed schema-v2 candidate, validation of the committed shared graph, URL Resource
+and Placement rules, view and order rules, and this subsection's rules MUST use this
+integrated dependency order:
+
+1. Validate all committed closed shapes plus the two DeviceBinding variants,
+   applicability, settings, and `ExternalDeviceKey` domains; required fields; strict types;
+   null rules; literal discriminators; permitted variant pairings; and Extensions.
+2. Validate every `display_filter` value, uniqueness, and canonical workflow order.
+3. Validate `EntityUUID` syntax for every entity ID, reference, and order member, then
+   common global entity-ID uniqueness.
+4. Resolve the default Workspace, Workspace/Tab, Placement/Tab, Placement/Resource, and
+   every DeviceBinding subject to its exact required entity type.
+5. Validate Workspace `tab_order` and Tab `display_order` completeness and uniqueness.
+6. Validate Workspace and Tab name uniqueness and the default-Workspace active-visible
+   invariant.
+7. Resolve Kanban members to Placements owned by the exact Tab.
+8. Validate Kanban uniqueness, disjointness, exact union, and workflow-status agreement.
+9. Validate exact DeviceBinding selector uniqueness.
+
+Persisted validation ends after step 9. Runtime exact-device, portable-fallback, or absence
+selection and Display or Kanban projection occur only after the complete persisted graph
+passes validation. They MUST NOT be treated as additional validation steps.
+
+Validation MUST reject rather than discover devices, choose settings, apply platform
+defaults, merge settings, repair references, deduplicate bindings, clean dangling subjects,
+or use root-array position.
+
+#### Forward references and scope boundaries
+
+Checkpoint 5 owns deterministic schema-v1 binding construction and counts, generated IDs,
+UUIDv5 names, migration defaults, collision handling, and replay equivalence. It must
+preserve every valid schema-v1 window and launch value; a valid empty DeviceBinding state
+MUST NOT be used where doing so would lose existing behavior.
+
+Later documentation checkpoints within issue #118 define duplicate-member and other parser
+failure categories, canonical serialization, overall-size enforcement, schema-v1 extension
+migration, transaction behavior, guarded replacement, verification, rollback, recovery,
+and interruption behavior. Existing URL-refresh preservation remains required by issue
+#118 but is outside this DeviceBinding subsection.
+
+Device enrollment, external-key issuance, synchronization, cross-device continuity,
+browser/profile discovery UI, and settings UI remain later platform work outside issue
+#118. Workspace-copy policy, generic new-Placement binding initialization, and non-URL
+bindings remain deferred.
+
+Image, file, document, application, shortcut, folder, local-origin, and Resource bindings
+are not defined for schema version 2. This subsection does not implement runtime behavior,
+migration code, schema activation, UI, dependencies, packaging, workflows, or releases.
 
 ### Deterministic schema-v1-to-v2 migration
 
