@@ -66,6 +66,82 @@ persisted schema-version numbers are distinct.
     1 to version 2. Until then, explicit version 2 is unsupported newer and is never opened
     or rewritten.
 
+## Schema version 2 URL-Tile contract
+
+### Status and scope
+
+Issue #118 is documentation-only. Schema version 2 remains unsupported and unregistered.
+This is not Q6. The eventual issue patch is limited to this ADR and `CHANGELOG.md`;
+checkpoint 0 changes only this ADR.
+
+This section inherits these boundaries:
+
+- Preserve schema-v1 Workspace and Tab identities.
+- Create exactly one Resource and one Placement per valid schema-v1 Tile occurrence without
+  deduplication.
+- Preserve URL, label, icon, color, browser, profile, `open_target`, Tab membership, and
+  per-Tab order.
+- Default migrated Placements to In Use.
+- Default migrated Tabs to Display mode.
+- Initialize the Display filter to New plus In Use.
+- Seed Display order and the In Use Kanban queue from existing per-Tab Tile order; initialize
+  New and Archived queues empty.
+- Retain the inclusive 4,194,304-byte source and candidate ceiling.
+- Reuse the existing Q3/Q4 preservation, guarded replacement, verification, retention,
+  ownership-proven rollback, fail-closed uncertainty, and privacy guarantees.
+
+### Frozen product decisions
+
+- Preserve every schema-v1 icon string through a Resource-owned opaque `legacy_string` icon
+  variant; null and the empty string remain distinct.
+- Migrated window and launch settings use portable fallback DeviceBindings; later externally
+  established device-specific bindings may override them.
+- The default Workspace requires at least one active, visible Tab; non-default Workspaces may
+  be empty or contain only hidden and/or archived Tabs.
+- Workspace names are exact-case unique application-wide; Tab names are exact-case unique
+  within their Workspace. Exact-case means decoded Unicode-string equality without trimming,
+  normalization, or case folding.
+- Schema version 2 is permanently URL-target-only; other target kinds require a later schema
+  version and are unsupported in v2.
+- Duplicate JSON object members at any nesting depth are malformed before schema-v1
+  validation.
+
+The following are excluded:
+
+- No ResourceProvenance.
+- No image-target payload or `local_origin`.
+- No content-derived identifier presented as a physical-device identity.
+- No Tab or Workspace deletion cascade.
+- No new size ceiling, extension-key grammar, or nesting-depth restriction.
+
+### Persisted graph and shared invariants
+
+*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+
+### URL Resources and Placements
+
+*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+
+### View, filtering, and independent orders
+
+*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+
+### Portable DeviceBindings
+
+*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+
+### Deterministic schema-v1-to-v2 migration
+
+*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+
+### Migration safety and failure behavior
+
+*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+
+### Later implementation slices
+
+*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+
 ## Version envelope
 
 ### Version identification
