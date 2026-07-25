@@ -275,7 +275,205 @@ serialization are outside this local dependency order.
 
 ### URL Resources and Placements
 
-*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+#### URL-only scope and precedence
+
+Schema version 2 is URL-target-only. For schema version 2, the closed shapes and invariants
+in this subsection are authoritative and MUST control over conflicting older generic ADR
+discussion. Older references to image targets, managed assets, intrinsic metadata,
+provenance, normalized URLs, or additional Resource fields or icon variants MUST NOT add
+keys or accepted values to the schema-v2 shapes below. `intrinsic_metadata` is intentionally
+omitted. A non-URL target requires a later schema version and MUST NOT be represented in
+schema version 2.
+
+#### Closed persisted shapes
+
+Every displayed key is required and MUST use the exact spelling shown. `UrlTarget`,
+`LegacyStringIcon`, Resource, and Placement are closed objects; an unknown direct key in any
+of them makes the candidate invalid.
+
+```text
+UrlTarget = {
+  url: string
+}
+
+LegacyStringIcon = {
+  kind: "legacy_string",
+  value: string
+}
+
+Resource = {
+  id: EntityUUID,
+  kind: "url",
+  target: UrlTarget,
+  default_label: string,
+  default_icon: LegacyStringIcon | null,
+  extensions: Extensions
+}
+
+Placement = {
+  id: EntityUUID,
+  resource_id: EntityUUID,
+  tab_id: EntityUUID,
+  label_override: string | null,
+  icon_override: LegacyStringIcon | null,
+  background_color: string,
+  workflow_status: WorkflowStatus,
+  extensions: Extensions
+}
+```
+
+Among direct fields in these shapes, JSON null is permitted only for
+`Resource.default_icon`, `Placement.label_override`, and `Placement.icon_override`.
+Extensions values retain the recursively nullable `StrictJsonValue` type defined above.
+No other direct field MAY be null.
+
+#### Persisted values and presentation ownership
+
+Every string MUST satisfy the common decoded, UTF-8-encodable Unicode-string rule. Empty
+strings are valid explicit URL, label, legacy-icon, and background-color values.
+
+`UrlTarget.url` is an opaque persisted string. Beyond its string type and UTF-8
+encodability, validation MUST NOT trim, parse, normalize, decode, rewrite, resolve, or
+otherwise validate its contents. It MUST NOT add or restrict a scheme, apply IDNA
+processing, perform a network access, or treat a normalized form as identity. Empty,
+whitespace-only, bare-host, custom-scheme, and otherwise non-normalized strings therefore
+remain valid persisted values.
+
+`background_color` is likewise an opaque persisted string. Validation MUST NOT trim, parse,
+normalize, or apply CSS or other color-syntax validation to it.
+
+A `LegacyStringIcon` value is opaque. Its `value` MUST NOT be interpreted or validated as a
+path, URL, managed-asset reference, image, or other structured value. A Resource
+`default_icon` of null means that the Resource has no default icon. A non-null
+`LegacyStringIcon`, including one whose `value` is the empty string, is distinct from null.
+
+Resource owns `target`, `default_label`, and `default_icon`. Resource MUST NOT contain Tab
+membership, workflow status, background color, label or icon overrides, order, browser,
+Chrome profile, or open-target state.
+
+Placement owns `tab_id`, `workflow_status`, `background_color`, `label_override`, and
+`icon_override`. A null `label_override` means inherit `Resource.default_label`; any string,
+including the empty string, is an explicit Placement label. A null `icon_override` means
+inherit `Resource.default_icon`; any `LegacyStringIcon`, including one with an empty
+`value`, is an explicit Placement icon. Placement MUST NOT duplicate the Resource target or
+Resource defaults.
+
+`browser`, `chrome_profile`, and `open_target` MUST NOT appear in Resource or Placement.
+Their schema-v2 representation and precedence are defined by the later DeviceBinding
+checkpoint.
+
+#### Identity, ownership, references, and sharing
+
+Resource and Placement IDs MUST follow the common `EntityUUID` rules and participate in
+global entity-ID uniqueness. Their IDs, not field values or definition-array positions, are
+their identities. Resource and Placement IDs MUST remain unchanged when their mutable
+values, references, workflow state, or order positions change.
+
+A Resource has no Workspace or Tab owner. It MAY be referenced by zero or more Placements
+owned by Tabs in the same or different Workspaces. A Placement is owned by exactly the one
+Tab resolved by its `tab_id` and references exactly the one Resource resolved by its
+`resource_id`.
+
+Equal URLs, targets, labels, icons, colors, Extensions values, or complete non-ID field sets
+MUST NOT imply Resource identity, Placement identity, sharing, uniqueness, or
+deduplication. Distinct Resource IDs with identical persisted content are valid and MUST
+NOT be merged or repaired. Distinct Placement IDs with identical persisted content are
+valid and MUST NOT be merged or repaired.
+
+Multiple independently identified Placements MAY reference the same Resource, including
+multiple Placements owned by the same Tab. Each remains a separate appearance with its own
+Placement-specific state and order memberships. Repeating a Resource or Placement
+definition with the same ID is invalid under global entity-ID uniqueness.
+
+A dangling or multiply resolved `resource_id` or `tab_id` is invalid. Validation MUST NOT
+replace, infer, or repair either reference.
+
+#### Display and Kanban membership
+
+Only Placement IDs MAY occur in a Tab's `display_order` and `kanban_order` indexes. A
+Resource ID or any other entity ID in either index is invalid.
+
+Every Placement MUST occur exactly once in its owning Tab's `display_order` and MUST NOT
+occur in another Tab's `display_order`. For each Tab, `display_order` MUST be duplicate-free,
+and its ID set MUST exactly equal the set of Placements whose `tab_id` equals that Tab's ID.
+Foreign, dangling, and omitted Placement IDs are invalid.
+
+After `WorkflowStatus` and `KanbanOrder` are defined and validated by the next checkpoint,
+every Placement MUST occur exactly once in the owning Tab's queue corresponding to its
+`workflow_status`, MUST NOT occur in another status queue, and MUST NOT occur in another
+Tab's `kanban_order`. The owning Tab's status queues MUST be duplicate-free and disjoint,
+and their union MUST exactly equal that Tab's Placement set.
+
+Display and Kanban sequence positions are independent. Neither sequence defines identity,
+and validation MUST NOT require the two sequences to have matching relative order. This
+subsection defines membership only; queue keys, status spellings, filtering, transitions,
+and reorder behavior remain forward references.
+
+#### Discard, orphans, and lifecycle boundaries
+
+Discard MUST remove only the selected Placement definition and that Placement ID from its
+owning Tab's `display_order` and matching Kanban queue. It MUST NOT remove the referenced
+Resource or another Placement of that Resource.
+
+A Resource with no Placements is a valid orphan. Orphan Resources MUST NOT be removed by
+Discard or any other implicit cleanup. A Resource MUST NOT be removed while any retained
+Placement references it. Explicit Resource deletion and orphan cleanup behavior are not
+defined here.
+
+Changing a Tab's visibility or lifecycle MUST NOT delete or detach its Placements or
+Resources and MUST NOT remove their required order memberships. This subsection defines no
+Tab or Workspace deletion cascade.
+
+#### Extensions
+
+Resource and Placement `extensions` MUST use the exact Extensions type defined above. Each
+is required, MUST use `{}` when empty, and MUST NOT be null. `UrlTarget` and
+`LegacyStringIcon` MUST NOT contain `extensions`.
+
+Extension keys and values are opaque and MUST NOT supply, override, alias, or satisfy a
+Resource or Placement field, identity, reference, inheritance rule, membership rule, or
+invariant. Extensions MUST NOT alter URL comparison, imply sharing, or trigger
+deduplication. Unknown direct keys remain invalid.
+
+#### Local validation dependency order
+
+For a parsed schema-v2 candidate, validation of the rules in this subsection MUST extend
+the common dependency order as follows:
+
+1. Validate the closed Resource, Placement, `UrlTarget`, and `LegacyStringIcon` shapes,
+   required keys, exact types, null rules, literal discriminators, string domains, and
+   Extensions structure.
+2. Validate `EntityUUID` syntax and common global entity-ID uniqueness.
+3. Resolve every Placement `tab_id` and `resource_id` to exactly the required entity type.
+4. Validate complete, duplicate-free per-Tab `display_order` set matching.
+5. After the next checkpoint validates `WorkflowStatus` and `KanbanOrder`, validate
+   complete, duplicate-free, disjoint, status-matching Kanban membership.
+6. Permit unreferenced Resources and reject every other dangling or multiply resolved
+   reference.
+
+Any failure MUST reject the candidate. Validation MUST NOT insert defaults, coerce or
+normalize values, replace IDs, infer references, merge duplicate content, deduplicate
+entities, change persisted state, or repair order memberships.
+
+#### Forward references and deferred matters
+
+`WorkflowStatus`, `ViewMode`, `display_filter`, the closed `KanbanOrder` shape, status queue
+keys, filtering, status transitions, independent reorder operations, cross-Tab movement
+behavior, and insertion defaults are defined by the next checkpoint.
+
+DeviceBinding fields, portable-fallback and device-specific precedence, browser/profile/open
+target mapping, and binding lifecycle are defined by the DeviceBinding checkpoint.
+
+The one-Resource-and-one-Placement-per-Tile migration mapping, generated IDs, UUIDv5 names
+and ordinals, collision handling, migration defaults, replay equivalence, and extension
+migration are defined by the deterministic migration checkpoint. Duplicate-member parser
+failure categories, size enforcement, migration transactions, recovery, replacement,
+rollback, canonical key and array ordering, JSON encoding, and candidate serialization are
+defined by their later checkpoints.
+
+Runtime Resource-sharing and Resource-wide editing UI, cross-Tab interaction design,
+explicit Resource deletion, and orphan-cleanup policy are not defined here. Non-URL target
+kinds are excluded from schema version 2 rather than deferred within it.
 
 ### View, filtering, and independent orders
 
