@@ -477,7 +477,223 @@ kinds are excluded from schema version 2 rather than deferred within it.
 
 ### View, filtering, and independent orders
 
-*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+#### Exact workflow types
+
+For schema version 2, the following definitions complete the committed Tab and Placement
+shapes:
+
+```text
+ViewMode = "display" | "kanban"
+
+WorkflowStatus = "new" | "in_use" | "archived"
+
+KanbanOrder = {
+  new: EntityUUID[],
+  in_use: EntityUUID[],
+  archived: EntityUUID[]
+}
+```
+
+`ViewMode` and `WorkflowStatus` are exact, case-sensitive string enumerations. `KanbanOrder`
+is a closed structural object: all three displayed keys are required, no other direct key is
+permitted, none of the keys or queue values may be null, and `extensions` is not permitted.
+Each queue MAY be empty.
+
+The logical workflow order is `new`, `in_use`, then `archived`. This order controls status-set
+encoding and runtime Kanban column projection, but does not decide canonical JSON
+object-member serialization order.
+
+`Tab.display_filter` is the duplicate-free canonical array encoding of a selected
+`WorkflowStatus` set. Selected values MUST occur in logical workflow order. Its complete
+valid domain is:
+
+```text
+[]
+["new"]
+["in_use"]
+["archived"]
+["new", "in_use"]
+["new", "archived"]
+["in_use", "archived"]
+["new", "in_use", "archived"]
+```
+
+An array outside this domain is invalid. In particular, validation MUST reject duplicate or
+out-of-order values rather than silently deduplicating or sorting them. The empty filter is
+valid for every Tab, including an active-visible Tab in the default Workspace.
+
+#### Persisted graph validity
+
+`display_order` and every queue in `kanban_order` contain Placement IDs only. A syntactically
+valid ID for a Resource, Workspace, Tab, DeviceBinding, or any other entity is invalid in
+these indexes.
+
+For each Tab, `display_order` MUST be duplicate-free and its ID set MUST exactly equal the
+set of Placements whose `tab_id` equals that Tab's ID. Every owned Placement therefore
+occurs exactly once in `display_order`, regardless of the Tab's `display_filter`,
+`view_mode`, visibility, or lifecycle and regardless of the Placement's `workflow_status`.
+
+The three Kanban queues MUST each be duplicate-free and MUST be pairwise disjoint. Their
+union MUST exactly equal the set of Placements owned by the Tab. Each owned Placement MUST
+occur exactly once, in the queue whose key equals that Placement's `workflow_status`;
+occurrence in either other queue is invalid.
+
+An empty Tab MUST use exactly these empty order values:
+
+```text
+display_order: []
+kanban_order: {
+  new: [],
+  in_use: [],
+  archived: []
+}
+```
+
+Placement workflow status and Tab lifecycle are independent. A Placement with
+`workflow_status: "archived"` MAY belong to an active Tab, and archiving a Tab does not
+change any owned Placement's workflow status.
+
+The sequence in `display_order` and the sequences in `kanban_order` are independent. A
+Placement's position in one does not determine, constrain, or default its position in the
+other.
+
+#### Runtime projection and filtering
+
+In Display view, the projected Placement sequence is the stable filtered subsequence of
+`display_order`: retain exactly those IDs whose resolved Placement has a
+`workflow_status` selected by `display_filter`, without changing their relative order.
+An empty filter projects no Placements and does not change persisted ownership, membership,
+status, or order.
+
+Responsive Display layout MAY change row and column geometry, but its row-major reading
+order MUST preserve the projected sequence. `display_filter` affects only this Display
+projection.
+
+In Kanban view, columns are projected in logical workflow order: `new`, `in_use`, then
+`archived`. Within each column, the corresponding queue sequence defines top-to-bottom
+order. Kanban projection MUST ignore `display_filter`.
+
+Switching `view_mode` selects one of these projections. It MUST NOT derive, reset, copy, or
+otherwise change persisted filter, status, membership, or either order.
+
+#### User operations and coordinated transitions
+
+A filter-change operation MUST change only `display_filter` and MUST leave a valid canonical
+value. It MUST NOT change any Placement status or either order. A view-mode switch MUST
+change only `view_mode`.
+
+A Display reorder while a filter is active MUST use this filtered-slot replacement
+algorithm:
+
+1. Identify, in left-to-right sequence, the slots in the full `display_order` occupied by
+   the currently projected Placement IDs.
+2. Require the requested projected sequence to be a permutation containing exactly those
+   projected IDs once each.
+3. Replace only the identified slots, left to right, with the requested sequence.
+4. Leave every filtered-out Placement ID in its exact existing slot.
+
+The resulting operation changes only `display_order`; it MUST NOT change `kanban_order`,
+workflow statuses, `display_filter`, or `view_mode`. This algorithm also applies to the
+all-status filter. When the filter is empty, the requested sequence MUST be empty and the
+operation is a complete no-op.
+
+A within-queue Kanban reorder MUST require a permutation containing exactly the existing
+members of that one queue and MUST change only that queue's sequence. It MUST preserve all
+workflow statuses, `display_order`, `display_filter`, `view_mode`, and the membership and
+relative order of the other queues. Moving a Placement between Kanban columns is a workflow
+status change, not a within-queue reorder.
+
+A workflow-status change MUST be represented as one coordinated mutation whose resulting
+persisted graph is valid:
+
+1. Change the Placement's `workflow_status` to the destination status.
+2. Remove its ID exactly once from the old matching queue.
+3. Insert its ID exactly once in the destination matching queue at the position supplied by
+   the operation or defined by that operation's separate contract.
+4. Preserve the relative order of every unaffected ID in the source and destination
+   queues, and leave every uninvolved queue unchanged.
+5. Leave `display_order`, `display_filter`, and `view_mode` unchanged.
+
+Graph validity permits every source-to-different-destination pair among `new`, `in_use`, and
+`archived`. Which transitions a UI exposes as commands is runtime management behavior, not
+a persisted-graph restriction.
+
+A cross-Tab Placement move MUST likewise produce one coordinated valid result. It MUST
+remove the Placement ID exactly once from the source Tab's `display_order` and from the
+source queue matching its workflow status, change the Placement's `tab_id`, and insert the
+ID exactly once into the destination Tab's `display_order` and destination queue matching
+that status. The destination Display and Kanban positions are independent and MUST be
+supplied separately unless a later operation contract explicitly defines defaults. The
+move itself MUST preserve the Placement's other fields and the relative order of all
+unaffected IDs in both Tabs.
+
+Placement creation MUST establish a valid `workflow_status` and insert the new Placement ID
+exactly once into both its owning Tab's `display_order` and the matching Kanban queue before
+the graph is persisted.
+
+This persistence contract defines no universal insertion default. Every operation that
+requires one or more positions MUST either supply every required position or invoke a
+separately specified operation-specific default. Display and matching-Kanban positions
+remain independent. Non-positional workflow-status command defaults are not defined here.
+The approved M2 source-order append behavior is one operation-specific product default;
+this subsection acknowledges that default without defining its future import mechanics.
+
+#### Hidden and archived Tabs
+
+Hidden and archived Tabs retain their `view_mode`, `display_filter`, complete
+`display_order`, complete `kanban_order`, and all owned Placement workflow statuses. When a
+Hide, Show, Archive, or Restore operation is valid under the shared lifecycle rules, it
+MUST NOT mutate any of those fields. Archiving or restoring a Tab MUST NOT perform a bulk
+workflow-status change. Runtime management UI and whether a hidden or archived Tab is
+normally selectable are deferred and do not weaken persisted membership requirements.
+
+#### Local validation dependency order
+
+For a parsed schema-v2 candidate, validation of the committed shared graph, URL Resource and
+Placement rules, and this subsection's rules MUST use this integrated dependency order:
+
+1. Validate exact `ViewMode` and `WorkflowStatus` literals, the closed `KanbanOrder` keys,
+   queue array types and null prohibitions, and the other committed closed shapes and
+   Extensions structures.
+2. Validate every `display_filter` value, uniqueness, and canonical logical order.
+3. Validate `EntityUUID` syntax for every entity ID, reference field, and order member,
+   then common global entity-ID uniqueness.
+4. Resolve default-Workspace, Workspace/Tab, Placement/Tab, and Placement/Resource ownership
+   and references according to the committed reference passes.
+5. Validate complete, duplicate-free Workspace `tab_order` and Tab `display_order` set
+   matching.
+6. Validate Workspace and Tab name uniqueness and the default-Workspace active-visible
+   invariant.
+7. Resolve every Kanban member to a Placement owned by that exact Tab.
+8. Validate per-queue uniqueness, pairwise disjointness, exact union with the Tab's
+   Placement set, and equality between each queue key and every member's
+   `workflow_status`.
+9. Only after the persisted graph is valid, derive Display or Kanban runtime projections.
+
+Any failure MUST reject the candidate. Validation MUST NOT select defaults, sort or
+deduplicate filters, change workflow status, infer insertion positions, move IDs, or repair
+memberships or relative order.
+
+#### Forward references and deferred matters
+
+Checkpoint 5 defines all schema-v1-to-v2 migration initialization, including migrated
+`view_mode`, `display_filter`, and `workflow_status` values; initial Display and Kanban
+sequences; empty-queue creation; generated IDs; UUIDv5 allocation and collision handling;
+and replay behavior. None of those migration defaults is established by this subsection.
+
+The DeviceBinding checkpoint defines binding representation, precedence, fallback, and
+lifecycle behavior. Later checkpoints define duplicate-member and other parser failure
+categories, size enforcement, transaction and crash behavior, replacement and rollback,
+and canonical serialization, including JSON object-member ordering and encoding.
+
+Management UI, command availability, drag-and-drop interaction, concurrent edits, undo,
+normal visibility or selection of hidden and archived Tabs, export inclusion and scope,
+Resource-sharing and Resource-wide editing UI, explicit Resource deletion, and orphan
+cleanup remain outside this subsection. No additional persisted order is implied. Universal
+add, duplicate, or move defaults and non-positional workflow-status command defaults remain
+undefined unless a later operation contract specifies them. Future M2 import mechanics
+remain outside this schema-v1-to-v2 migration contract and are deferred to a later import
+contract.
 
 ### Portable DeviceBindings
 
