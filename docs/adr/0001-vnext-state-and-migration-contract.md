@@ -71,8 +71,8 @@ persisted schema-version numbers are distinct.
 ### Status and scope
 
 Issue #118 is documentation-only. Schema version 2 remains unsupported and unregistered.
-This is not Q6. The eventual issue patch is limited to this ADR and `CHANGELOG.md`;
-checkpoint 0 changes only this ADR.
+This is not Q6. The issue patch is limited to this ADR and `CHANGELOG.md`; checkpoints 0
+through 6 changed only this ADR.
 
 This section inherits these boundaries:
 
@@ -182,9 +182,10 @@ For Root, `schema_version` MUST be the integer literal `2`. `workspaces` MUST be
 `tabs` MUST be nonempty because the default-Workspace invariant below requires an
 active-visible Tab. `resources`, `placements`, and `device_bindings` MAY be empty arrays.
 The position of an entity in a root definition array has no graph meaning and MUST NOT be
-used as identity, ownership, or reference data; checkpoint 5 defines canonical
-serialization. Resource, Placement, and DeviceBinding are forward references whose closed
-shapes are defined under later headings.
+used as identity, ownership, or reference data. The deterministic migration subsection
+defines migration construction-array order, and the migration-safety subsection defines
+canonical serialization. Resource, Placement, and DeviceBinding are forward references
+whose closed shapes are defined under later headings.
 
 The four Tab view/order fields are required so that Tab remains closed. `ViewMode`,
 `WorkflowStatus`, and `KanbanOrder` are strictly forward references. This subsection does
@@ -252,8 +253,10 @@ invalid even when that object supports `extensions`.
 This subsection introduces no extension-key grammar, nesting-depth limit, per-extension
 size limit, key-length or value-length limit, or collection-count limit. It also does not
 define the schema-v1 extension namespace, migration destination, parsed-value preservation,
-generated-ID treatment, canonical key ordering, or the overall 4 MiB bound; checkpoint 5
-defines those migration and serialization rules.
+generated-ID treatment, canonical key ordering, or the overall 4 MiB bound. The deterministic
+migration subsection defines generated-ID treatment, while the root-Extensions,
+serialization, and size rules under migration safety define the remaining migration-output
+concerns.
 
 #### Local validation dependency order
 
@@ -359,8 +362,7 @@ inherit `Resource.default_icon`; any `LegacyStringIcon`, including one with an e
 Resource defaults.
 
 `browser`, `chrome_profile`, and `open_target` MUST NOT appear in Resource or Placement.
-Their schema-v2 representation and precedence are defined by the later DeviceBinding
-checkpoint.
+Their schema-v2 representation and precedence are defined under Portable DeviceBindings.
 
 #### Identity, ownership, references, and sharing
 
@@ -398,9 +400,9 @@ occur in another Tab's `display_order`. For each Tab, `display_order` MUST be du
 and its ID set MUST exactly equal the set of Placements whose `tab_id` equals that Tab's ID.
 Foreign, dangling, and omitted Placement IDs are invalid.
 
-After `WorkflowStatus` and `KanbanOrder` are defined and validated by the next checkpoint,
-every Placement MUST occur exactly once in the owning Tab's queue corresponding to its
-`workflow_status`, MUST NOT occur in another status queue, and MUST NOT occur in another
+Under the `WorkflowStatus` and `KanbanOrder` rules in View, filtering, and independent
+orders, every Placement MUST occur exactly once in the owning Tab's queue corresponding to
+its `workflow_status`, MUST NOT occur in another status queue, and MUST NOT occur in another
 Tab's `kanban_order`. The owning Tab's status queues MUST be duplicate-free and disjoint,
 and their union MUST exactly equal that Tab's Placement set.
 
@@ -446,8 +448,8 @@ the common dependency order as follows:
 2. Validate `EntityUUID` syntax and common global entity-ID uniqueness.
 3. Resolve every Placement `tab_id` and `resource_id` to exactly the required entity type.
 4. Validate complete, duplicate-free per-Tab `display_order` set matching.
-5. After the next checkpoint validates `WorkflowStatus` and `KanbanOrder`, validate
-   complete, duplicate-free, disjoint, status-matching Kanban membership.
+5. Apply the integrated `WorkflowStatus` and `KanbanOrder` rules below to validate complete,
+   duplicate-free, disjoint, status-matching Kanban membership.
 6. Permit unreferenced Resources and reject every other dangling or multiply resolved
    reference.
 
@@ -459,17 +461,17 @@ entities, change persisted state, or repair order memberships.
 
 `WorkflowStatus`, `ViewMode`, `display_filter`, the closed `KanbanOrder` shape, status queue
 keys, filtering, status transitions, independent reorder operations, cross-Tab movement
-behavior, and insertion defaults are defined by the next checkpoint.
+behavior, and insertion defaults are defined under View, filtering, and independent orders.
 
 DeviceBinding fields, portable-fallback and device-specific precedence, browser/profile/open
-target mapping, and binding lifecycle are defined by the DeviceBinding checkpoint.
+target mapping, and binding lifecycle are defined under Portable DeviceBindings.
 
 The one-Resource-and-one-Placement-per-Tile migration mapping, generated IDs, UUIDv5 names
 and ordinals, collision handling, migration defaults, replay equivalence, and extension
-migration are defined by the deterministic migration checkpoint. Duplicate-member parser
-failure categories, size enforcement, migration transactions, recovery, replacement,
+migration are defined under Deterministic schema-v1-to-v2 migration. Duplicate-member
+parser failure categories, size enforcement, migration transactions, recovery, replacement,
 rollback, canonical key and array ordering, JSON encoding, and candidate serialization are
-defined by their later checkpoints.
+defined under Migration safety and failure behavior.
 
 Runtime Resource-sharing and Resource-wide editing UI, cross-Tab interaction design,
 explicit Resource deletion, and orphan-cleanup policy are not defined here. Non-URL target
@@ -676,15 +678,17 @@ memberships or relative order.
 
 #### Forward references and deferred matters
 
-Checkpoint 5 defines all schema-v1-to-v2 migration initialization, including migrated
+The deterministic schema-v1-to-v2 migration subsection defines all migration initialization,
+including migrated
 `view_mode`, `display_filter`, and `workflow_status` values; initial Display and Kanban
 sequences; empty-queue creation; generated IDs; UUIDv5 allocation and collision handling;
 and replay behavior. None of those migration defaults is established by this subsection.
 
-The DeviceBinding checkpoint defines binding representation, precedence, fallback, and
-lifecycle behavior. Later checkpoints define duplicate-member and other parser failure
-categories, size enforcement, transaction and crash behavior, replacement and rollback,
-and canonical serialization, including JSON object-member ordering and encoding.
+Portable DeviceBindings defines binding representation, precedence, fallback, and lifecycle
+behavior. Migration safety and failure behavior defines duplicate-member and other parser
+failure categories, size enforcement, transaction and interruption behavior, replacement
+and rollback, and canonical serialization, including JSON object-member ordering and
+encoding.
 
 Management UI, command availability, drag-and-drop interaction, concurrent edits, undo,
 normal visibility or selection of hidden and archived Tabs, export inclusion and scope,
@@ -798,8 +802,8 @@ constraints. Geometry remains valid and MUST be preserved when `auto_fit` is tru
 the current runtime does not apply it.
 
 These domains preserve every strict schema-v1 window-setting value. They do not establish
-migration construction or defaults; checkpoint 5 owns deterministic binding construction
-and all migration defaults.
+migration construction or defaults; the deterministic schema-v1-to-v2 migration subsection
+owns binding construction and all migration defaults.
 
 #### URL-launch-setting value domain
 
@@ -969,13 +973,13 @@ or use root-array position.
 
 #### Forward references and scope boundaries
 
-Checkpoint 5 owns deterministic schema-v1 binding construction and counts, generated IDs,
-UUIDv5 names, migration defaults, collision handling, and replay equivalence. It must
-preserve every valid schema-v1 window and launch value; a valid empty DeviceBinding state
-MUST NOT be used where doing so would lose existing behavior.
+The deterministic schema-v1-to-v2 migration subsection owns binding construction and
+counts, generated IDs, UUIDv5 names, migration defaults, collision handling, and replay
+equivalence. It MUST preserve every valid schema-v1 window and launch value; a valid empty
+DeviceBinding state MUST NOT be used where doing so would lose existing behavior.
 
-Later documentation checkpoints within issue #118 define duplicate-member and other parser
-failure categories, canonical serialization, overall-size enforcement, schema-v1 extension
+Migration safety and failure behavior defines duplicate-member and other parser failure
+categories, canonical serialization, overall-size enforcement, schema-v1 extension
 migration, transaction behavior, guarded replacement, verification, rollback, recovery,
 and interruption behavior. Existing URL-refresh preservation remains required by issue
 #118 but is outside this DeviceBinding subsection.
@@ -1045,7 +1049,7 @@ mapping is:
 | each distinct root Tile occurrence | one generated Resource and one generated Placement |
 | root window/layout fields | one generated Workspace/window DeviceBinding |
 | each Tile's launch fields | one generated Placement/launch DeviceBinding |
-| root `extensions` | the deterministic result required from the later Extensions checkpoint |
+| root `extensions` | the deterministic result defined under Root Extensions migration |
 
 No recognized strict-v1 scalar is discarded. The v1 `tiles`, `columns`, `auto_fit`, and
 window-geometry root keys are absent from the closed v2 root only because their complete
@@ -1292,6 +1296,10 @@ No URL, label, icon, background color, browser or profile value, extension key o
 path, content hash, device value, locale, clock, random value, process state, filesystem
 state, or network input may enter a UUIDv5 name.
 
+No digest, canonical-source projection, canonical serialization, source byte, or candidate
+byte may enter a UUIDv5 name. Identity inputs remain only the exact locator and
+entity-family values committed above.
+
 Before generating any ID, migration MUST reserve the preserved Workspace ID and every
 preserved Tab ID in one global used-ID set. It MUST then allocate generated IDs in these
 fixed family phases:
@@ -1386,44 +1394,50 @@ Reprocessing the same validated logical schema-v1 graph in a fresh process MUST 
 every generated ID, scalar field, reference, membership, default, DeviceBinding, required
 Extensions initialization, and deterministic construction-array order.
 
-Deterministic graph construction composed with the later canonical serializer MUST produce
-the issue-required byte-equivalent canonical output. This subsection does not define JSON
-object-member order, escaping, whitespace, final newline, encoding mechanics, or any other
-byte-serialization rule.
+Deterministic graph construction composed with the canonical serializer defined below MUST
+produce the issue-required byte-equivalent canonical output. This downstream byte
+consequence does not change the logical-graph replay rule or supply any identity input.
+This subsection does not define JSON object-member order, escaping, whitespace, final
+newline, encoding mechanics, or any other byte-serialization rule.
 
-#### Extensions dependency
+#### Root Extensions migration
 
 Strict v1 requires Application, Workspace, and Tab `extensions` to be empty objects.
 Migration MUST preserve each as its required independent `{}` value. Every generated
 Resource, Placement, and DeviceBinding MUST likewise initialize `extensions: {}`.
 
-This checkpoint does not decide the destination or reserved-key conflict policy for the
-required schema-v1 root `extensions` object, which may be empty or nonempty.
-A later issue-#118
-documentation checkpoint MUST supply one deterministic schema-v1 root Extensions result
-that:
+A valid strict-v1 root `extensions` value is either `{}` or contains exactly the existing
+key `io.github.108thecitizen.legacy` with a strict-JSON object value. Migration MUST
+construct schema-v2 Root `extensions` as follows:
 
-- preserves the complete logical strict-JSON legacy value;
-- does not seed identity or change ID-allocation priority;
-- does not supply, override, alias, or weaken a canonical field, reference, or invariant;
-- is independent of source formatting and JSON object-member order; and
-- is incorporated into the detached candidate before complete schema-v2 validation.
+- `{}` maps to an independent `{}`.
+- When `io.github.108thecitizen.legacy` is present, copy that key and its complete object
+  value under the same key.
+- Preserve the payload as the same parsed JSON value. Do not preserve or require its
+  original lexical spelling, source bytes, whitespace, escapes, or object-member order.
+- Retain array order inside the payload. Object-key order follows canonical serialization.
+- Do not rename, split, promote, interpret, normalize, or nest the payload again.
 
-An unresolved required root Extensions result leaves no complete candidate eligible for
-serialization or persistence. This dependency blocks implementation, registration,
-activation, and a claim that mapping is complete for every valid profile with nonempty root
-Extensions. It does not block documenting or committing this checkpoint.
+Schema-looking names nested in the opaque payload MUST NOT override, alias, or satisfy a
+direct schema field and do not create a reserved-field conflict. Unknown direct keys remain
+invalid. An invalid strict-v1 `extensions` shape is an invalid source; migration MUST NOT
+repair it or reclassify any value as extension data.
+
+This migration-output restriction does not narrow otherwise valid future schema-v2
+Extensions values permitted by the general schema-v2 contract. No extension key or value
+may seed generated identity, affect ID-allocation priority, supply or alter a reference or
+order, select a default, change ownership, or weaken a validation invariant.
 
 #### Validation and fail-closed boundary
 
 The migration contract separates four stages:
 
 1. Parse and fully validate strict schema v1.
-2. Construct a pure, detached, deterministic candidate, including the later-defined root
-   Extensions result.
+2. Construct a pure, detached, deterministic candidate, including the root Extensions
+   result defined above.
 3. Validate the complete candidate using the committed schema-v2 persisted validator.
-4. In later documentation checkpoints, canonically serialize, enforce the overall candidate
-   size limit, and pass the result through the existing guarded filesystem transaction.
+4. Canonically serialize, enforce the overall candidate size limit, and pass the result
+   through the existing guarded filesystem transaction defined below.
 
 Checkpoint-5 success ends after stage 3. For an original implicit-v0 document, stage 1 for
 this transform receives the validated in-memory output of the existing consecutive
@@ -1470,24 +1484,18 @@ schema-v2 validation failure leaves no candidate eligible for serialization or
 persistence. Already-valid schema v2 is validated as current state and MUST NOT be replayed
 through the v1-to-v2 transform.
 
-Migration diagnostics MAY contain only later-approved fixed event, stage, or category
-names; schema-version numbers; and bounded non-sensitive counts. They MUST NOT contain
-source or candidate bytes, field values, URLs, labels, icons, colors, browser or profile
-values, entity IDs, UUID input names, paths, filenames, extension contents, exception text,
-or recovery-artifact names.
+Migration diagnostics MAY contain only the fixed Q3/Q4 event, failure-kind, stage, category,
+transaction-state, and configuration-authority names finalized below; schema-version
+numbers; and bounded, non-sensitive counts. They MUST
+NOT contain source or candidate bytes, field values, URLs, labels, icons, colors, browser or
+profile values, entity IDs, UUID input names, paths, filenames, extension contents,
+exception text, or recovery-artifact names.
 
-#### Forward references and exclusions
+#### Cross-references and exclusions
 
-Later documentation checkpoints within issue #118 retain responsibility for:
-
-- duplicate-member and parser-failure taxonomy;
-- final diagnostic category names;
-- canonical serialization and byte layout;
-- overall candidate-size enforcement;
-- complete root-Extensions routing and reserved-key conflicts;
-- preservation-copy publication, guarded replacement, reload, and candidate verification;
-- rollback, recovery, cleanup, ownership proofs, and interruption behavior; and
-- final implementation-slice division and changelog or audit work.
+Migration safety and failure behavior below completes the remaining issue-#118 parser,
+diagnostic, serialization, size, transaction, recovery, ownership, interruption,
+implementation-slice, changelog, and final-audit responsibilities.
 
 The following remain outside this checkpoint or outside issue #118:
 
@@ -1528,7 +1536,8 @@ through the v1-to-v2 transformation.
 
 Migration diagnostics MAY contain only:
 
-- later-approved fixed event, stage, or category names;
+- the fixed Q3/Q4 event, failure-kind, stage, category, transaction-state, and
+  configuration-authority names finalized below;
 - schema-version numbers; and
 - bounded, non-sensitive counts.
 
@@ -1545,17 +1554,10 @@ Migration diagnostics MUST NOT contain:
 - exception text; or
 - recovery-artifact names.
 
-Later issue-#118 documentation checkpoints retain responsibility for:
-
-- duplicate-member and parser-failure taxonomy;
-- final diagnostic category names;
-- canonical serialization and byte layout;
-- overall candidate-size enforcement;
-- complete root-Extensions routing and reserved-key conflicts;
-- preservation-copy publication, guarded replacement, reload, and exact candidate
-  verification;
-- rollback, recovery, cleanup, ownership proofs, and interruption-boundary behavior; and
-- final implementation-slice division, changelog work, and full contract audit.
+Checkpoint 7 completes the issue-#118 parser, diagnostic, serialization, size, transaction,
+recovery, ownership, interruption, implementation-slice, changelog, and final-audit
+responsibilities in the fixed rules below. None of those responsibilities remains deferred
+within issue #118.
 
 The following remain outside this checkpoint and outside issue #118:
 
@@ -1571,9 +1573,245 @@ The following remain outside this checkpoint and outside issue #118:
 
 This documentation-only checkpoint creates no `Q6` label or implementation boundary.
 
+#### Parser boundary and fixed failure taxonomy
+
+Duplicate JSON object members at any nesting depth, including inside an Extensions payload,
+MUST be detected before a normal decoder can collapse them. A duplicate member is
+`ConfigLoadFailureCategory.MALFORMED_JSON`, whose fixed value is `malformed_json`. Detection
+occurs before version classification or schema validation and retains the existing Q3
+recovery route.
+
+Issue-#118 failures MUST map onto the existing Q3/Q4 vocabulary exactly:
+
+| Issue-level failure | Existing fixed category | Existing fixed stage |
+| --- | --- | --- |
+| raw file read failure | `file_read_failure` | none |
+| raw source larger than 4 MiB | `size_limit_exceeded` | none |
+| invalid UTF-8 | `invalid_utf8` | none |
+| malformed JSON, including duplicate members | `malformed_json` | none |
+| non-object root | `non_object_root` | none |
+| malformed schema-version value | `malformed_version` | none |
+| unsupported older version | `unsupported_older` | none |
+| unsupported newer version | `unsupported_newer` | none |
+| invalid complete strict-v1 graph | `source_validation_failure` | `source_validation` |
+| controlled v1-to-v2 transform rejection | `step_rejection` | `step` |
+| invalid complete schema-v2 candidate | `target_validation_failure` | `target_validation` |
+| deterministic serialization failure | `serialization_failure` | `serialization` |
+| candidate larger than 4 MiB | `candidate_size_limit_exceeded` | `serialization` |
+
+The existing general Q4 vocabulary remains available without creating a parallel taxonomy.
+For a consecutive multi-step path, an invalid nonfinal output remains
+`intermediate_validation_failure` at `intermediate_validation`. An engine-owned detachment
+failure remains `json_detachment_failure` at its current fixed stage. Neither condition is
+expected from the one-step v1-to-v2 path after a complete strict-v1 source has been accepted.
+The implicit-v0-only `legacy_construction_failure` category MUST NOT replace
+`source_validation_failure` for a strict-v1 graph.
+
+Implementation-controlled registry rejection retains exactly these
+`RegistryRejectionCategory` values:
+
+- `invalid_bounds`;
+- `invalid_step_endpoint`;
+- `duplicate_step_source`;
+- `step_gap`;
+- `unsafe_step_name`;
+- `duplicate_step_name`;
+- `invalid_validator_version`;
+- `duplicate_validator_version`; and
+- `missing_validator`.
+
+Implementation defects retain exactly these `PureEngineDefectCategory` values:
+`callback_exception`, `invalid_callback_result`, `invalid_step_output`, and
+`unexpected_target_version`. Callback exception text MUST be discarded. A registry step
+name MAY appear only as a fixed, validated internal registry event name; it MUST NOT contain
+or derive from source data, an entity ID, or a UUID input name. This ADR does not register or
+name the dormant v1-to-v2 step.
+
+The transaction reuses exactly these `TransactionFailureCategory` values:
+
+- `preservation_failure`;
+- `source_changed`;
+- `original_reverification_failure`;
+- `candidate_write_failure`;
+- `post_write_source_changed`;
+- `post_write_validation_failure`;
+- `candidate_retention_failure`;
+- `rollback_source_changed`;
+- `rollback_artifact_failure`;
+- `rollback_write_failure`; and
+- `rollback_verification_failure`.
+
+Their mappings remain exact: preservation inability is `preservation_failure` unless source
+ownership was lost, which is `source_changed`; a failed preserved-original proof is
+`original_reverification_failure`; atomic candidate-writer failure is
+`candidate_write_failure`; post-write reload, byte, or ownership failure is
+`post_write_source_changed`; an owned validator-rejected candidate that is safely retained
+and rolled back is `post_write_validation_failure`; retention failure followed by a safe
+rollback is `candidate_retention_failure`; loss of live-candidate ownership before rollback
+or failure of the final live-original ownership check after rollback is
+`rollback_source_changed`; an unavailable or unverifiable original artifact is
+`rollback_artifact_failure`; rollback-writer failure is `rollback_write_failure`; and
+failure of exact reload, restored-original validation, or the final preservation-artifact
+proof after rollback is `rollback_verification_failure`.
+
+Supporting recovery categories remain `source_unavailable`, `source_changed`,
+`recovery_directory_failure`, `recovery_copy_failure`, `recovery_verification_failure`, and
+`reset_failure`. Supporting failed-candidate-retention categories remain `source_changed`,
+`recovery_directory_failure`, `candidate_copy_failure`, and
+`candidate_verification_failure`.
+
+Diagnostics reuse only the existing fixed failure kinds `registry_rejection`,
+`version_rejection`, `execution_rejection`, `engine_failure`, `engine_defect`, and
+`transaction_failure`; the only transaction-state literal is
+`aborted_after_preservation`. Configuration authority is one of `original`, `candidate`,
+`restored_original`, `external_current`, and `unknown`. Existing diagnostic fields are
+limited to the applicable fixed names `failure_count`, `failure_kind`, `failure_category`,
+`failure_stage`, `source_version`, `target_version`, `step_name`, `transaction_state`,
+`configuration_authority`, `recovery_copy_count`, `failed_candidate_copy_count`,
+`rollback_count`, `recovery_category`, and `candidate_retention_category`, subject to the
+checkpoint-6 content prohibitions above.
+
+#### Canonical serialization and candidate-size enforcement
+
+After the complete schema-v2 logical candidate passes validation without mutation, it MUST
+be serialized exactly as:
+
+```python
+json.dumps(
+    document,
+    ensure_ascii=False,
+    sort_keys=True,
+    indent=2,
+    allow_nan=False,
+).encode("utf-8")
+```
+
+This serializer recursively sorts every object key. It MUST retain every semantically
+ordered array in its already-defined order. The encoding is UTF-8, line endings are LF,
+there is no BOM, and there is no trailing newline. Non-finite numbers are not serializable.
+The exact encoded byte sequence is the migration candidate.
+
+The candidate ceiling is inclusive: exactly `4 * 1024 * 1024`, or `4,194,304`, bytes is
+allowed. Anything larger MUST be rejected before replacement as
+`candidate_size_limit_exceeded` at `serialization`. No partial or oversized candidate is
+eligible for persistence.
+
+Canonical serialization is not an identity input. Replaying the same validated logical
+schema-v1 graph produces the same schema-v2 logical graph under the locator-only
+checkpoint-5 rules. Applying this fixed serializer to that same graph consequently produces
+identical candidate bytes. A content hash, digest, canonical-source projection, source
+byte, candidate byte, or serialization detail MUST NOT enter a v1-to-v2 UUIDv5 name or
+redefine logical-graph replay equivalence.
+
+#### Existing Q3/Q4 transaction path and ownership
+
+The v1-to-v2 migration MUST reuse one existing Q3/Q4 transaction in this order:
+
+1. Perform one bounded raw load and strict parse/classification.
+2. Validate the complete strict-v1 source.
+3. Publish and independently verify one byte-identical permanent preservation copy before
+   invoking the migration step.
+4. Run the transformation only on detached data.
+5. Validate the complete schema-v2 candidate.
+6. Canonically serialize it and enforce the inclusive 4 MiB ceiling.
+7. Write it only through the shared sibling-temporary-file path: write the complete bytes,
+   flush, sync, close, run the guard, and atomically replace the live path.
+8. Immediately before replacement, reverify both live-source ownership and the preserved
+   artifact.
+9. Bounded-reload the live file after replacement.
+10. Require exact equality with the candidate bytes, complete schema-v2 validation, and a
+    final live-candidate ownership check.
+11. Declare migration successful only after every check passes.
+
+Before candidate replacement, migration performs no replacement and the original remains
+authoritative while ownership is proven. If an external writer makes ownership uncertain,
+migration fails closed without replacing or claiming authority over the live path. A
+candidate replacement failure does not authorize another overwrite.
+
+A reload failure, byte mismatch, or ownership uncertainty after replacement is
+`post_write_source_changed` and causes no retention, rollback, retry, or blind overwrite.
+Only an exactly reloaded candidate whose bytes and ownership are proven and whose complete
+target validation then rejects is eligible for exact failed-candidate retention.
+
+A validator-rejected candidate MAY be retained exactly only while candidate ownership
+remains proven. Rollback MAY be attempted only while the live bytes remain exactly the
+candidate and the original preservation artifact remains independently verified. The
+rollback MUST use the same guarded atomic writer, repeat both ownership proofs immediately
+before replacement, and then require an exact bounded reload, complete validation of the
+restored original, a final live-original ownership check, and another preservation-artifact
+check.
+
+Failed-candidate retention failure does not authorize an unsafe replacement or weaken any
+rollback guard. Permanent recovery and retained-candidate artifacts MUST NOT be
+automatically deleted. Cleanup MUST remove only temporary or staging files proven to be
+owned by the writer. There is no kernel compare-and-swap guarantee; any ownership
+uncertainty fails closed.
+
+Once schema v2 is eventually supported and current, an already-valid schema-v2 document is
+validated as current state, MUST NOT be replayed through v1-to-v2, and MUST NOT receive a
+migration normalization write. This rule does not register or activate schema v2 now.
+
+#### Interruption boundaries
+
+The existing Q4 transaction has no recovery journal. Its interruption behavior is:
+
+- interruption before candidate replacement leaves schema v1 authoritative, subject to the
+  same external-ownership limitation;
+- interruption during temporary writing exposes no partial candidate as `config.json`;
+- interruption after atomic candidate replacement but before verification or rollback may
+  leave one complete schema-v2 candidate live;
+- the next startup validates the live document normally and does not guess which
+  preservation artifact to restore;
+- interruption before rollback replacement may leave the complete candidate live;
+- interruption after rollback replacement may leave the complete original live;
+- the next startup validates whichever complete document is live; and
+- no boundary permits partial-candidate publication.
+
+This contract does not promise guaranteed automatic rollback across a process or system
+interruption.
+
+#### Final issue-#118 acceptance audit
+
+Checkpoint 7 confirms that the authoritative issue-#118 section and the complete example
+below jointly define every required Root, Application, Workspace, Tab, URL Resource,
+Placement, and DeviceBinding key, type, null rule, enum, empty state, identity, ownership,
+reference, uniqueness rule, and validation dependency.
+
+The audit confirms one distinct Resource and Placement per source Tile without
+deduplication; exact URL launch, presentation, refresh, Workspace/Tab state, membership, and
+order preservation; fixed workflow, view, filter, Display, and three-queue Kanban
+initialization; rejection of duplicate, omitted, dangling, cross-Tab, wrong-status, and
+multiply represented Placements; empty Tabs and queues; and complete portable-fallback
+DeviceBinding construction without discovery.
+
+Determinism remains source-order traversal plus locator-only UUIDv5 input names, the fixed
+namespace, exact initial and retry names, preserved Tab IDs, per-Tab ordinals, bounded
+retries, collision exhaustion, and logical-graph replay equivalence. Strict validation,
+reject-only failure behavior, canonical downstream bytes, and fail-closed transaction
+ownership are complete. No required issue-#118 behavior remains assigned to another
+documentation checkpoint.
+
 ### Later implementation slices
 
-*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+No implementation slice may register, activate, persist, or otherwise emit an identity-only
+or incomplete schema-v2 graph. The dependency order is:
+
+1. Add dormant Qt-free schema-v2 types, the complete persisted validator, the canonical
+   serializer, fixtures, and invariant tests. These components remain unreachable from
+   production startup.
+2. Add the dormant pure v1-to-v2 transformer with locator-only identity, exact
+   initial/retry-name, extension, logical-graph replay, collision-exhaustion, size, and
+   rejection tests. It remains unregistered.
+3. Add runtime adapters that preserve existing URL launch, presentation, refresh, and
+   portable DeviceBinding behavior while operating on the complete graph.
+4. Integrate the duplicate-aware parser boundary, registry, startup, and existing Q3/Q4
+   transaction only after the complete graph and required runtime adapters are supported.
+   Schema-v2 activation occurs only in this final integration slice.
+5. Keep later product work separate: Kanban UI, Workspace selection, multiple-Workspace and
+   multi-placement UI, non-URL target formats in a later schema, import staging, and device
+   enrollment or synchronization.
+
+These slices assign no issue number, branch, milestone, release, or `Q6` name.
 
 ## Version envelope
 
@@ -1600,9 +1838,9 @@ This documentation-only checkpoint creates no `Q6` label or implementation bound
   root `extensions` object is either empty or contains exactly the fixed
   `io.github.108thecitizen.legacy` object described below. Version 1 introduces no general
   extension-key grammar.
-- In version 2, each versioned entity may carry an `extensions` object. Extension keys must
-  be reverse-domain or repository-qualified names. Values are opaque JSON and round-trip
-  unchanged.
+- In version 2, every entity shape that displays `extensions` requires it. Keys and values
+  use the shared Extensions contract above, which introduces no extension-key grammar.
+  Values are opaque strict JSON and round-trip as parsed values.
 - Legacy version 0 fields that are not recognized are copied into
   `extensions["io.github.108thecitizen.legacy"]` during migration so a successful migration
   does not silently discard them.
@@ -1694,24 +1932,124 @@ retains `application.title: "My Launcher"`, while its migrated Workspace is stil
 
 ### Version 2 full-graph root state
 
-Version 2 retains the accepted full-graph contract previously numbered version 1. Arrays are
-shown for readability; each `id` must be unique within the complete document. The empty
-arrays identify top-level collections and do not by themselves form a valid graph.
+Version 2 retains the accepted full-graph contract previously numbered version 1. This is
+one complete valid logical example. Its canonical UUIDs are illustrative and are not
+claimed to be migration-generated IDs. Every reference resolves, every entity ID is
+globally unique, and every required Extensions value is present.
 
 ```json
 {
   "schema_version": 2,
   "application": {
     "title": "My Launcher",
-    "default_workspace_id": "0b7c...",
+    "default_workspace_id": "11111111-1111-4111-8111-111111111111",
     "extensions": {}
   },
-  "workspaces": [],
-  "tabs": [],
-  "resources": [],
-  "placements": [],
-  "device_bindings": [],
-  "extensions": {}
+  "workspaces": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "name": "Default Workspace",
+      "tab_order": [
+        "22222222-2222-4222-8222-222222222222"
+      ],
+      "extensions": {}
+    }
+  ],
+  "tabs": [
+    {
+      "id": "22222222-2222-4222-8222-222222222222",
+      "workspace_id": "11111111-1111-4111-8111-111111111111",
+      "name": "Main",
+      "visibility": "visible",
+      "lifecycle": "active",
+      "view_mode": "display",
+      "display_filter": [
+        "new",
+        "in_use"
+      ],
+      "display_order": [
+        "44444444-4444-4444-8444-444444444444"
+      ],
+      "kanban_order": {
+        "new": [],
+        "in_use": [
+          "44444444-4444-4444-8444-444444444444"
+        ],
+        "archived": []
+      },
+      "extensions": {}
+    }
+  ],
+  "resources": [
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "kind": "url",
+      "target": {
+        "url": "https://chat.openai.com"
+      },
+      "default_label": "ChatGPT",
+      "default_icon": {
+        "kind": "legacy_string",
+        "value": "chatgpt.png"
+      },
+      "extensions": {}
+    }
+  ],
+  "placements": [
+    {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "resource_id": "33333333-3333-4333-8333-333333333333",
+      "tab_id": "22222222-2222-4222-8222-222222222222",
+      "label_override": null,
+      "icon_override": null,
+      "background_color": "#F5F6FA",
+      "workflow_status": "in_use",
+      "extensions": {}
+    }
+  ],
+  "device_bindings": [
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "subject_kind": "workspace",
+      "subject_id": "11111111-1111-4111-8111-111111111111",
+      "binding_kind": "window",
+      "applicability": {
+        "kind": "portable_fallback"
+      },
+      "settings": {
+        "columns": 5,
+        "auto_fit": true,
+        "window_x": null,
+        "window_y": null,
+        "window_w": null,
+        "window_h": null
+      },
+      "extensions": {}
+    },
+    {
+      "id": "66666666-6666-4666-8666-666666666666",
+      "subject_kind": "placement",
+      "subject_id": "44444444-4444-4444-8444-444444444444",
+      "binding_kind": "launch",
+      "applicability": {
+        "kind": "portable_fallback"
+      },
+      "settings": {
+        "browser": null,
+        "chrome_profile": null,
+        "open_target": "tab"
+      },
+      "extensions": {}
+    }
+  ],
+  "extensions": {
+    "io.github.108thecitizen.legacy": {
+      "preserved_array": [
+        2,
+        1
+      ]
+    }
+  }
 }
 ```
 
@@ -1732,12 +2070,13 @@ short-lived staging manifest is defined separately below.
 
 ### Deterministic migration IDs
 
-Migration must be pure and repeatable for the same input bytes.
+The following digest-based rules apply only to the earlier v0-to-v1/Q5 migration. That
+migration is pure and repeatable for the same input bytes.
 
 - Valid existing tab UUIDs are retained.
 - Missing, malformed, or duplicate legacy IDs are replaced deterministically.
-- A migration computes a SHA-256 digest of its canonicalized source JSON and derives UUIDv5
-  values using the standard URL namespace and future names of the form
+- The v0-to-v1 migration computes a SHA-256 digest of its canonicalized source JSON and
+  derives UUIDv5 values using the standard URL namespace and names of the form
   `https://github.com/108thecitizen/DesktopTileLauncher/migration/v{source_version}/{digest}/{kind}/{ordinal}`.
 - Q5 implements only the exact version 0 names
   `https://github.com/108thecitizen/DesktopTileLauncher/migration/v0/{digest}/workspace/0`
@@ -1745,8 +2084,15 @@ Migration must be pure and repeatable for the same input bytes.
   `https://github.com/108thecitizen/DesktopTileLauncher/migration/v0/{digest}/tab/{ordinal}`.
 - Ordinals come from the preserved legacy order, not from a dictionary iteration order.
 - A rerun against identical legacy input therefore produces identical candidate state.
-- New entities created after migration use UUIDv4 and are persisted before another process
-  can observe them.
+
+These v0-to-v1 digest and name rules MUST NOT be generalized to v1-to-v2. The authoritative
+v1-to-v2 transform uses its fixed namespace, locator-only names, bounded retry suffixes,
+collision-exhaustion rule, and logical-graph replay equivalence defined above. No digest,
+canonical-source projection, source byte, candidate byte, or canonical serialization detail
+enters a v1-to-v2 UUIDv5 name.
+
+New entities created after migration use UUIDv4 and are persisted before another process can
+observe them.
 
 Ephemeral refresh-operation tokens and in-memory object identities are not persisted IDs
 and must not be used as Resource, Placement, or ImportBatch identity.
@@ -1754,7 +2100,9 @@ and must not be used as Resource, Placement, or ImportBatch identity.
 ## Entity contracts
 
 Workspace and the version 1 subset of Tab apply to both schema versions. The additional Tab
-fields and the Resource, Placement, and DeviceBinding contracts apply to version 2.
+fields apply to version 2. For schema-v2 Resource, Placement, and DeviceBinding shapes, the
+authoritative closed URL-only and Portable DeviceBindings contracts above supersede the
+older generic future-model discussion.
 
 ### Workspace
 
@@ -1774,8 +2122,9 @@ Invariants:
 - Every owned Tab occurs exactly once in `tab_order`.
 - Version 1 has exactly one Workspace and at least one Tab. Version 2 has at least one of
   each.
-- In version 2, window geometry is device-specific and is represented by a DeviceBinding,
-  not portable Workspace state. Version 1 retains the existing root window fields.
+- In version 2, window geometry is DeviceBinding-owned rather than direct Workspace state.
+  Selection may use a portable fallback or an exact device-specific binding; migration
+  constructs the portable fallback. Version 1 retains the existing root window fields.
 
 Window ownership, simultaneous windows, restoration, compact palettes, and tab tear-off
 remain later behavior. This ADR does not define a running-window/session model.
@@ -1825,121 +2174,41 @@ version 2 migration default is `["new", "in_use"]`.
 
 ### Resource
 
-A Resource represents the shared target or managed content independently of where it is
-shown.
+For schema version 2, a Resource is exactly the closed URL-only shape defined under URL
+Resources and Placements. It owns an opaque URL target, default label, nullable opaque
+`legacy_string` default icon, and required Extensions value. It has no managed-asset,
+intrinsic-metadata, provenance, local-origin, Tab, workflow, color, order, browser, profile,
+or launch field.
 
-Required fields:
-
-- `id`: immutable UUID.
-- `kind`: initially `url` or `image`; later kinds require a schema decision or a documented
-  extension contract.
-- `target`: kind-specific portable data. URL targets contain a normalized URL. Managed
-  image targets contain a managed-asset reference relative to the DTL data root.
-- `managed_asset`: null or metadata containing a relative path, media type, byte size, and
-  SHA-256 digest. Absolute managed paths are forbidden.
-- `intrinsic_metadata`: validated kind-specific facts derived from the underlying target or
-  managed content, such as media type, dimensions, orientation, or fetched page metadata.
-  It is not per-tab presentation state.
-- `default_label`: the Resource-owned display label inherited by Placements that do not
-  provide a label override.
-- `default_icon`: the Resource-owned managed icon reference, thumbnail reference, or null,
-  inherited by Placements that do not provide an icon override.
-- `provenance`: bounded, privacy-reviewed metadata about creation/import. Original local
-  paths are not portable Resource fields.
-- `extensions`: opaque extension map.
-
-Resource fields do not include tab membership, workflow status, order, placement color,
-label/icon overrides, display filtering, browser profile, or window-launch preference.
-
-Metadata refresh operates once per Resource even when several selected Placements refer to
-it. It updates intrinsic metadata and may update Resource defaults after confirmation. The
-confirmation identifies how many inheriting Placements would change. Placements that inherit
-a changed default then display the new value; explicit Placement overrides are not rewritten.
-The metadata and confirmed default changes for one Resource are applied atomically.
-
-For M2, each imported photo is copied into DTL-managed storage. The original is left
-untouched. The managed copy is the Resource target. An optional original-source reference
-may exist only in a local DeviceBinding and is never used by Discard to delete the source.
+Image and other managed-content Resource shapes require a later schema. They do not add
+fields, target kinds, validation rules, or runtime behavior to schema version 2.
 
 ### Placement
 
-A Placement is one appearance of a Resource in one Tab.
+For schema version 2, a Placement is exactly the closed shape defined under URL Resources
+and Placements. It owns Tab membership, workflow status, background color, nullable
+string label and `LegacyStringIcon` icon overrides, and required Extensions. Null overrides
+inherit the Resource defaults; explicit strings, including empty strings, remain explicit
+values.
 
-Required fields:
-
-- `id`: immutable UUID.
-- `resource_id`: referenced Resource ID.
-- `tab_id`: owning Tab ID.
-- `label_override`: placement-level display name or null. Null means inherit the Resource
-  `default_label`.
-- `icon_override`: placement-level managed icon reference or null. Null means inherit the
-  Resource `default_icon`.
-- `background_color`: placement-level color.
-- `workflow_status`: `new`, `in_use`, or `archived`.
-- `extensions`: opaque extension map.
-
-Order is Placement-level behavior but is serialized once in its owning Tab's
-`display_order` and `kanban_order` indexes rather than duplicated as rank fields on the
-Placement. Workflow status is placement-level so future Placements of the same Resource in
-different tabs can be triaged independently. Color and label/icon overrides are also
-placement-level; editing one does not silently change another Placement or the Resource
-default.
-
-The effective presentation is deterministic:
-
-- Effective label is `label_override` when non-null; otherwise it is Resource
-  `default_label`.
-- Effective icon is `icon_override` when non-null; otherwise it is Resource `default_icon`.
-- A future Reset to Resource Default action clears the corresponding override instead of
-  copying the current default into it.
-
-Changing a Resource default intentionally affects every Placement that inherits that
-default, while explicit overrides survive. Image thumbnails and other intrinsic metadata
-remain Resource-owned even when a Placement overrides its displayed label or icon.
-Normal label/icon editing on a tile changes its Placement override; changing a shared
-Resource default requires an explicitly resource-wide action.
-
-The `icon_override` field and any presentation asset created only for that override are
-Placement-owned. Override assets live in managed presentation storage, distinct from the
-Resource's managed target content. Replacing or clearing an override, or discarding its
-Placement, only makes an unreferenced override asset eligible for the separate cleanup
-workflow; it does not delete the asset implicitly.
-
-Invariants:
-
-- `resource_id` resolves to exactly one Resource.
-- `tab_id` resolves to exactly one Tab.
-- The Placement occurs exactly once in its Tab's `display_order`.
-- For each Tab, the set of IDs in `display_order` equals exactly the set of Placements owned
-  by that Tab; foreign IDs and omissions are invalid.
-- The Placement occurs exactly once in the `kanban_order` array matching its
-  `workflow_status` and in no other Kanban array.
-- A Resource may have zero or more Placements. M2 import creates exactly one Placement per
-  imported Resource; multi-placement UI remains deferred.
+Every Placement resolves to exactly one Resource and one Tab and occurs exactly once in its
+owning Tab's complete Display order and status-matching Kanban queue. The complete
+membership, independent-order, sharing, orphan, Discard, and validation rules above are
+authoritative. Multi-placement UI and non-URL presentation assets remain later product or
+schema work.
 
 ### DeviceBinding
 
-A DeviceBinding stores settings that cannot safely or meaningfully travel as portable
-Resource or Workspace state.
+For schema version 2, DeviceBinding is exactly one of the two closed variants defined under
+Portable DeviceBindings: Workspace/window or Placement/launch. Applicability is either the
+closed `portable_fallback` variant or the closed `device_specific` variant containing an
+`ExternalDeviceKey`. A direct top-level `device_key`, Resource subject, local-origin
+binding, or other subject/binding pairing is invalid.
 
-Required fields:
-
-- `id`: immutable UUID.
-- `device_key`: opaque per-installation key; it is not a hardware serial number.
-- `subject_kind`: `workspace`, `resource`, or `placement`.
-- `subject_id`: matching Workspace, Resource, or Placement ID.
-- `binding_kind`: initially `window` or `launch`.
-- `settings`: validated binding-specific object.
-- `extensions`: opaque extension map.
-
-A Workspace/window binding may contain window geometry and auto-fit presentation state. A
-Placement/launch binding may contain browser selection, Chrome profile, or open target. A
-Resource/local-origin binding may contain an original-source reference used for provenance
-or relinking. Secrets, credentials, and raw device identifiers are forbidden.
-
-There may be at most one binding for a `(device_key, subject_kind, subject_id,
-binding_kind)` tuple. Missing bindings use platform defaults. Cross-device synchronization
-and device enrollment remain out of scope.
+Selector uniqueness, exact-device then portable-fallback precedence, absence, complete
+settings, identity, references, lifecycle, and validation use the authoritative rules
+above. Device enrollment, external-key issuance, synchronization, and cross-device
+continuity remain outside issue #118.
 
 ### ImportBatch
 
@@ -2265,7 +2534,7 @@ remains:
 |---|---|
 | `application.title` | unchanged, independently from Workspace naming |
 | sole Workspace | same identity, name, default reference, ownership, and `tab_order` |
-| root `columns`, `auto_fit`, and window geometry | local Workspace/window DeviceBinding settings |
+| root `columns`, `auto_fit`, and window geometry | portable-fallback Workspace/window DeviceBinding settings |
 | Tabs | same IDs, names, ownership, order, and visibility; lifecycle becomes `active` |
 | each root Tile | one distinct URL Resource and one Placement; no URL deduplication |
 | Tile `tab_id` | resolving Placement `tab_id` |
@@ -2274,7 +2543,7 @@ remains:
 | Tile `icon` | Resource `default_icon`; Placement `icon_override: null` |
 | Tile `bg` | Placement `background_color` |
 | Tile URL | Resource URL target |
-| Tile browser/profile/open target | local Placement/launch DeviceBinding |
+| Tile browser/profile/open target | portable-fallback Placement/launch DeviceBinding |
 | existing Tiles | Placement `workflow_status: in_use` |
 | existing Tabs | `view_mode: display`, Display filter `new` + `in_use` |
 
@@ -2287,38 +2556,37 @@ Tab, hidden state, stable order, Tile field, launch setting, window value, and p
 extension remains accounted for. The complete version 2 candidate must pass all version 2
 invariants before any write.
 
-New photo imports after version 2 create image Resources, New Placements, and, when the batch
-creates a Tab, a Kanban Tab with the default Display filter of New plus In Use.
+Photo and other non-URL imports require a later schema and remain outside schema version 2.
+They MUST NOT create image Resources in a schema-v2 document.
 
 ## Recovery, migration, and rollback boundary
 
-The startup sequence is normative:
+The issue-#118 transaction, ownership, diagnostic, and interruption rules under Migration
+safety and failure behavior are authoritative for v1-to-v2 and reuse the existing Q3/Q4
+path.
 
-1. Read bounded bytes from the expected configuration path without modifying it.
-2. Parse JSON. A parse failure enters Q3 recovery; migration is not attempted.
-3. Determine and validate the source version. Unsupported or malformed versions enter
-   recovery/read-only handling and are not rewritten.
-4. Preserve a byte-for-byte recovery copy before the first migration write.
-5. Apply consecutive pure migration steps in memory. No step uses Qt, the network, a real
-   device, wall-clock ordering, or global mutable state.
-6. Validate the complete target document and its version-specific graph and managed-path
-   constraints.
-7. Serialize deterministically and atomically replace the configuration.
-8. Reload and validate the written file before declaring migration complete.
+One bounded raw load precedes parsing and classification. Raw parse failures, including
+duplicate members once the documented parser boundary is implemented, retain the Q3
+recovery route. Malformed and unsupported version values use the fixed Q4 Exit-only
+categories and are not rewritten.
 
-Failure rules:
+For a migration-bearing input, complete source validation precedes preservation. One exact
+permanent preservation copy is published and independently verified before a detached step
+runs. Complete target validation and canonical size-bounded serialization precede the
+guarded atomic replacement. Exact bounded reload, target validation, and final ownership
+proof precede success.
 
-- A failure at steps 1-6 leaves the original path untouched.
-- A failed atomic replacement leaves the previous configuration authoritative.
-- A failed post-write verification restores the preserved last-good bytes through the same
-  atomic-write path and retains the failed candidate for diagnostics without sensitive data.
-- Recovery copies use collision-safe names, remain outside managed asset cleanup, and are
-  never overwritten.
-- Reopening an already valid version 1 document is idempotent and performs no migration write.
-- Loaded version 1 state never passes through repair-oriented legacy normalization and never
-  regenerates identities. Invalid identities or references are rejected before any write.
-- Diagnostics record versions, step names, counts, and sanitized failure categories, not URLs,
-  file content, titles, paths, or credentials.
+Reload failure, byte mismatch, or ownership uncertainty after replacement permits no
+retention or rollback. Only an exactly owned candidate that fails target validation is
+eligible for exact retention and ownership-proven rollback through the same guarded writer.
+Permanent recovery and retained-candidate artifacts are not automatically deleted; cleanup
+removes only writer-owned temporaries. The non-journaled interruption boundaries above
+apply, and no automatic rollback is guaranteed across process or system interruption.
+
+Reopening an already valid current-version document is idempotent and performs no migration
+write. Loaded versioned state never passes through repair-oriented legacy normalization and
+never regenerates identities. Invalid identities or references are rejected before any
+write.
 
 Q3 implements corrupt-input preservation and user recovery. Q4 implements the version
 registry, pure step runner, validation hooks, deterministic tests, and rollback plumbing.
@@ -2340,25 +2608,18 @@ order and fields remain complete, and unknown fields or non-finite values are re
 
 ### Version 2
 
-A version 2 candidate is valid only when:
+A version 2 candidate is valid only when it passes, without mutation, the complete
+nine-step integrated persisted-validation dependency order under Portable DeviceBindings.
+That order covers every closed shape, required key, strict type, null rule, literal and
+enum; Extensions structure; display-filter domain; canonical globally unique entity ID;
+typed reference; complete Workspace, Display, and Kanban membership; exact-case name
+uniqueness; the default-Workspace active-visible invariant; workflow-status agreement; and
+DeviceBinding selector uniqueness.
 
-- Every required field has the exact documented JSON type and enum value.
-- All IDs are canonical and globally unique across entity types.
-- Every reference resolves to the required entity type.
-- Exactly one application default Workspace exists and resolves.
-- Every Tab has one Workspace owner and appears once in that Workspace's `tab_order`.
-- Every Placement has one Tab owner, one Resource, and appears once in that Tab's
-  `display_order`.
-- For each Tab, `display_order` is duplicate-free and its ID set equals exactly the set of
-  Placements whose `tab_id` names that Tab.
-- The three `kanban_order` arrays are duplicate-free and disjoint; their union is exactly
-  the Tab's Placement set, and each Placement occurs in the array matching its status.
-- All collection members are reachable or are explicitly permitted orphan Resources.
-- Managed paths are normalized relative paths contained by the DTL-managed root; traversal,
-  absolute paths, links escaping the root, and device paths are invalid.
-- Display filters and Display/Kanban orders are duplicate-free.
-- DeviceBinding uniqueness and subject rules hold.
-- Extension values are valid JSON and their namespace keys are valid.
+Orphan Resources are explicitly permitted. Every other required reference and membership
+must resolve exactly as documented. Schema version 2 is URL-only and therefore has no
+managed-path invariant. Extensions use the shared strict-JSON contract and have no
+namespace-key grammar.
 
 Validation is strict in both versions. Repair belongs in an explicit migration step, not in
 general versioned loading.
@@ -2380,12 +2641,11 @@ Anything else enters explicit recovery without configuration mutation or automat
 - Q5: create the default Workspace named exactly `Default Workspace`, preserve the existing
   launcher title in `application.title`, and introduce stable Workspace/Tab identity
   migration while preserving existing valid Tab IDs and behavior as schema version 1.
-- Later version 1 to version 2 Resource/Placement slice: introduce typed targets, placement
-  ownership, status, and independent Display/Kanban orders.
-- Later image/import slices: implement the RD-09 recovery journal, managed assets,
-  DeviceBindings, crash-boundary tests, and the M2 routing limits.
-- Later Kanban slice: implement independent column queues and their status-transition rules
-  without changing Display order.
+- Later schema-v2 implementation follows the dormant-types, dormant-transformer, runtime
+  adapter, and final integration/activation dependency order documented above. No slice may
+  emit an incomplete schema-v2 graph.
+- Later image/import, Kanban UI, Workspace-selection, multi-placement, and device-platform
+  slices remain separate product or future-schema work.
 
 No implementation issue may silently change this contract. A material change requires a
 superseding ADR or an explicit amendment reviewed before the dependent code merges.
@@ -2465,7 +2725,8 @@ This ADR intentionally does not decide:
 - Multiple new tabs per batch or multi-placement import UI.
 - Cross-device synchronization, conflict resolution, or device enrollment.
 - Multi-window session ownership, tab tear-off, compact palettes, or always-on-top behavior.
-- Document/application target schemas beyond the initial URL and image contract.
+- Image, document, application, and other target schemas beyond the URL-only schema-v2
+  contract.
 - Long-term import history, undo, or automatic orphan cleanup.
 - Exact retention prompts for unresolved or quarantined import journals. Crash Resume,
   Abandon Import, conflict preservation, and safe final cleanup are required and not
