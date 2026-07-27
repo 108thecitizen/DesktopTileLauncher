@@ -47,6 +47,9 @@
 - Clarify ADR-0001 so schema version 1 is the Q5 identity-only Workspace/Tab format and the
   unchanged full Resource/Placement/DeviceBinding graph is schema version 2; the Windows
   Content Triage “v1” product milestone name remains unchanged.
+- Document the deterministic schema-v1-to-v2 URL-Tile migration and complete schema-v2
+  contract; this documentation-only change does not alter runtime behavior, activate schema v2,
+  or change persisted state.
 
 ## v0.3.5 - 2026-06-17
 
