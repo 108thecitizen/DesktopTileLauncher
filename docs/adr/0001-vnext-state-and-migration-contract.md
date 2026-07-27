@@ -1504,7 +1504,72 @@ This checkpoint creates no `Q6` label or implementation boundary.
 
 ### Migration safety and failure behavior
 
-*Checkpoint 0 placeholder; contract details are intentionally deferred.*
+Checkpoint 6 completes only the migration rejection, diagnostic-privacy, and responsibility
+boundaries. It does not alter the accepted checkpoint 0-5 mapping, allocation, validation,
+or terminology.
+
+Every migration failure MUST reject rather than repair. Migration MUST NOT:
+
+- mutate the source graph or original source bytes;
+- normalize, trim, parse, validate, coerce, or rewrite URL, color, icon, browser, profile,
+  or launch values beyond the already committed type-domain rules;
+- discover devices, browsers, profiles, paths, displays, or other platform state;
+- sort any semantically ordered per-Tab sequence;
+- infer identities, references, positions, defaults, or memberships beyond the exact
+  committed migration contract;
+- deduplicate Tile occurrences;
+- drop entities or extension data; or
+- publish, persist, accept, or otherwise expose a partial candidate.
+
+Collision exhaustion, impossible mapping, an unresolved Extensions result, or any failure
+of complete schema-v2 validation leaves no candidate eligible for serialization or
+persistence. Already-valid schema v2 is validated as current state and MUST NOT be replayed
+through the v1-to-v2 transformation.
+
+Migration diagnostics MAY contain only:
+
+- later-approved fixed event, stage, or category names;
+- schema-version numbers; and
+- bounded, non-sensitive counts.
+
+Migration diagnostics MUST NOT contain:
+
+- source or candidate bytes;
+- field values;
+- URLs, labels, icons, or colors;
+- browser or profile values;
+- entity IDs;
+- UUID input names;
+- paths or filenames;
+- extension contents;
+- exception text; or
+- recovery-artifact names.
+
+Later issue-#118 documentation checkpoints retain responsibility for:
+
+- duplicate-member and parser-failure taxonomy;
+- final diagnostic category names;
+- canonical serialization and byte layout;
+- overall candidate-size enforcement;
+- complete root-Extensions routing and reserved-key conflicts;
+- preservation-copy publication, guarded replacement, reload, and exact candidate
+  verification;
+- rollback, recovery, cleanup, ownership proofs, and interruption-boundary behavior; and
+- final implementation-slice division, changelog work, and full contract audit.
+
+The following remain outside this checkpoint and outside issue #118:
+
+- runtime migration implementation or registration;
+- schema-v2 activation;
+- native-v2 missing/reset construction or generic new-entity defaults;
+- image, file/document, application/shortcut, folder, or other non-URL target formats;
+- ImportBatch, staging, or future M2 import behavior;
+- runtime, Kanban, Workspace-selection, multiple-Workspace, or multi-placement UI;
+- device enrollment, key issuance, discovery, synchronization, or cross-device continuity;
+  and
+- dependencies, packaging, workflows, or release work.
+
+This documentation-only checkpoint creates no `Q6` label or implementation boundary.
 
 ### Later implementation slices
 
