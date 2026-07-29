@@ -1,0 +1,400 @@
+{
+  "schema_version": 2,
+  "application": {
+    "title": "Café 東京",
+    "default_workspace_id": "10000000-0000-4000-8000-000000000001",
+    "extensions": {
+      "app.example.test": {
+        "note": "synthetic"
+      }
+    }
+  },
+  "workspaces": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "name": "Primary",
+      "tab_order": [
+        "20000000-0000-4000-8000-000000000001",
+        "20000000-0000-4000-8000-000000000002",
+        "20000000-0000-4000-8000-000000000003",
+        "20000000-0000-4000-8000-000000000004"
+      ],
+      "extensions": {
+        "workspace.example.test": true
+      }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "name": "Secondary",
+      "tab_order": [
+        "20000000-0000-4000-8000-000000000005"
+      ],
+      "extensions": {}
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "name": "Empty",
+      "tab_order": [],
+      "extensions": {}
+    }
+  ],
+  "tabs": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "workspace_id": "10000000-0000-4000-8000-000000000001",
+      "name": "Main",
+      "visibility": "visible",
+      "lifecycle": "active",
+      "view_mode": "display",
+      "display_filter": [
+        "new",
+        "in_use"
+      ],
+      "display_order": [
+        "40000000-0000-4000-8000-000000000002",
+        "40000000-0000-4000-8000-000000000001",
+        "40000000-0000-4000-8000-000000000003"
+      ],
+      "kanban_order": {
+        "new": [
+          "40000000-0000-4000-8000-000000000001"
+        ],
+        "in_use": [
+          "40000000-0000-4000-8000-000000000002"
+        ],
+        "archived": [
+          "40000000-0000-4000-8000-000000000003"
+        ]
+      },
+      "extensions": {
+        "tab.example.test": {
+          "selected": null
+        }
+      }
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "workspace_id": "10000000-0000-4000-8000-000000000001",
+      "name": "Archive Visible",
+      "visibility": "visible",
+      "lifecycle": "archived",
+      "view_mode": "kanban",
+      "display_filter": [
+        "archived"
+      ],
+      "display_order": [
+        "40000000-0000-4000-8000-000000000004"
+      ],
+      "kanban_order": {
+        "new": [
+          "40000000-0000-4000-8000-000000000004"
+        ],
+        "in_use": [],
+        "archived": []
+      },
+      "extensions": {}
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000003",
+      "workspace_id": "10000000-0000-4000-8000-000000000001",
+      "name": "Hidden Active",
+      "visibility": "hidden",
+      "lifecycle": "active",
+      "view_mode": "display",
+      "display_filter": [
+        "new",
+        "in_use",
+        "archived"
+      ],
+      "display_order": [],
+      "kanban_order": {
+        "new": [],
+        "in_use": [],
+        "archived": []
+      },
+      "extensions": {}
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000004",
+      "workspace_id": "10000000-0000-4000-8000-000000000001",
+      "name": "Hidden Archive",
+      "visibility": "hidden",
+      "lifecycle": "archived",
+      "view_mode": "kanban",
+      "display_filter": [
+        "new",
+        "archived"
+      ],
+      "display_order": [],
+      "kanban_order": {
+        "new": [],
+        "in_use": [],
+        "archived": []
+      },
+      "extensions": {}
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000005",
+      "workspace_id": "10000000-0000-4000-8000-000000000002",
+      "name": "Main",
+      "visibility": "visible",
+      "lifecycle": "active",
+      "view_mode": "display",
+      "display_filter": [
+        "in_use"
+      ],
+      "display_order": [
+        "40000000-0000-4000-8000-000000000005"
+      ],
+      "kanban_order": {
+        "new": [],
+        "in_use": [
+          "40000000-0000-4000-8000-000000000005"
+        ],
+        "archived": []
+      },
+      "extensions": {}
+    }
+  ],
+  "resources": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "kind": "url",
+      "target": {
+        "url": "https://shared.example.test/path"
+      },
+      "default_label": "Shared",
+      "default_icon": null,
+      "extensions": {
+        "resource.example.test": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "kind": "url",
+      "target": {
+        "url": "https://shared.example.test/path"
+      },
+      "default_label": "Shared",
+      "default_icon": null,
+      "extensions": {
+        "resource.example.test": [
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "kind": "url",
+      "target": {
+        "url": ""
+      },
+      "default_label": "",
+      "default_icon": {
+        "kind": "legacy_string",
+        "value": ""
+      },
+      "extensions": {
+        "orphan.example.test": "kept"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000004",
+      "kind": "url",
+      "target": {
+        "url": "custom+demo://example.test/路径"
+      },
+      "default_label": "例",
+      "default_icon": {
+        "kind": "legacy_string",
+        "value": "opaque-icon-value"
+      },
+      "extensions": {}
+    }
+  ],
+  "placements": [
+    {
+      "id": "40000000-0000-4000-8000-000000000001",
+      "resource_id": "30000000-0000-4000-8000-000000000001",
+      "tab_id": "20000000-0000-4000-8000-000000000001",
+      "label_override": null,
+      "icon_override": null,
+      "background_color": "",
+      "workflow_status": "new",
+      "extensions": {}
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000002",
+      "resource_id": "30000000-0000-4000-8000-000000000001",
+      "tab_id": "20000000-0000-4000-8000-000000000001",
+      "label_override": "",
+      "icon_override": {
+        "kind": "legacy_string",
+        "value": ""
+      },
+      "background_color": "not-a-color",
+      "workflow_status": "in_use",
+      "extensions": {
+        "placement.example.test": {
+          "inheritance": false
+        }
+      }
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000003",
+      "resource_id": "30000000-0000-4000-8000-000000000002",
+      "tab_id": "20000000-0000-4000-8000-000000000001",
+      "label_override": "Archived",
+      "icon_override": null,
+      "background_color": "transparent-ish",
+      "workflow_status": "archived",
+      "extensions": {}
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000004",
+      "resource_id": "30000000-0000-4000-8000-000000000004",
+      "tab_id": "20000000-0000-4000-8000-000000000002",
+      "label_override": null,
+      "icon_override": null,
+      "background_color": "蓝色",
+      "workflow_status": "new",
+      "extensions": {}
+    },
+    {
+      "id": "40000000-0000-4000-8000-000000000005",
+      "resource_id": "30000000-0000-4000-8000-000000000001",
+      "tab_id": "20000000-0000-4000-8000-000000000005",
+      "label_override": "Secondary placement",
+      "icon_override": null,
+      "background_color": "#123456",
+      "workflow_status": "in_use",
+      "extensions": {}
+    }
+  ],
+  "device_bindings": [
+    {
+      "id": "50000000-0000-4000-8000-000000000001",
+      "subject_kind": "workspace",
+      "subject_id": "10000000-0000-4000-8000-000000000001",
+      "binding_kind": "window",
+      "applicability": {
+        "kind": "portable_fallback"
+      },
+      "settings": {
+        "columns": -1,
+        "auto_fit": true,
+        "window_x": -20,
+        "window_y": 0,
+        "window_w": null,
+        "window_h": 900
+      },
+      "extensions": {}
+    },
+    {
+      "id": "50000000-0000-4000-8000-000000000002",
+      "subject_kind": "workspace",
+      "subject_id": "10000000-0000-4000-8000-000000000001",
+      "binding_kind": "window",
+      "applicability": {
+        "kind": "device_specific",
+        "device_key": "device-A"
+      },
+      "settings": {
+        "columns": 0,
+        "auto_fit": false,
+        "window_x": null,
+        "window_y": null,
+        "window_w": null,
+        "window_h": null
+      },
+      "extensions": {
+        "binding.example.test": null
+      }
+    },
+    {
+      "id": "50000000-0000-4000-8000-000000000003",
+      "subject_kind": "workspace",
+      "subject_id": "10000000-0000-4000-8000-000000000002",
+      "binding_kind": "window",
+      "applicability": {
+        "kind": "device_specific",
+        "device_key": "   "
+      },
+      "settings": {
+        "columns": 5,
+        "auto_fit": true,
+        "window_x": 1,
+        "window_y": 2,
+        "window_w": 3,
+        "window_h": 4
+      },
+      "extensions": {}
+    },
+    {
+      "id": "50000000-0000-4000-8000-000000000004",
+      "subject_kind": "placement",
+      "subject_id": "40000000-0000-4000-8000-000000000001",
+      "binding_kind": "launch",
+      "applicability": {
+        "kind": "portable_fallback"
+      },
+      "settings": {
+        "browser": null,
+        "chrome_profile": "",
+        "open_target": "tab"
+      },
+      "extensions": {}
+    },
+    {
+      "id": "50000000-0000-4000-8000-000000000005",
+      "subject_kind": "placement",
+      "subject_id": "40000000-0000-4000-8000-000000000001",
+      "binding_kind": "launch",
+      "applicability": {
+        "kind": "device_specific",
+        "device_key": "device-A"
+      },
+      "settings": {
+        "browser": "Unsupported Browser",
+        "chrome_profile": "   ",
+        "open_target": "window"
+      },
+      "extensions": {}
+    },
+    {
+      "id": "50000000-0000-4000-8000-000000000006",
+      "subject_kind": "placement",
+      "subject_id": "40000000-0000-4000-8000-000000000005",
+      "binding_kind": "launch",
+      "applicability": {
+        "kind": "device_specific",
+        "device_key": "device-A"
+      },
+      "settings": {
+        "browser": "",
+        "chrome_profile": null,
+        "open_target": "tab"
+      },
+      "extensions": {}
+    }
+  ],
+  "extensions": {
+    "root.example.test": {
+      "nullable": null,
+      "ordered": [
+        2,
+        1
+      ],
+      "schema_version": 999,
+      "nested": {
+        "extensions": {
+          "opaque": true
+        }
+      }
+    }
+  }
+}
