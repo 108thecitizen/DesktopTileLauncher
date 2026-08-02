@@ -7,6 +7,9 @@
   explicit preserve-and-reset flow before the launcher mutates configuration state.
 - Add a Qt-free, schema-versioned migration harness and activate its pure deterministic
   v0-to-v1 step for the Workspace/Tab identity schema.
+- Add a dormant, deterministic, Qt-free schema-v1-to-v2 transformer that constructs and
+  checks the complete URL Resource/Placement/DeviceBinding graph while keeping schema v2
+  unregistered and unreachable from production startup and persistence.
 - Persist one `Default Workspace`, stable Workspace and Tab identities, ID-based Tile
   membership, and an independent `application.title` while retaining flat Tile behavior and
   existing launcher settings.
