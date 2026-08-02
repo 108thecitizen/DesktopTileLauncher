@@ -19,9 +19,19 @@ REPO_ROOT = Path(__file__).parents[2]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "schema_v2"
 SCHEMA_PATH = REPO_ROOT / "config_schema_v2.py"
 SERIALIZATION_PATH = REPO_ROOT / "config_serialization_v2.py"
+MIGRATION_V2_PATH = REPO_ROOT / "config_migration_v2.py"
+TRANSFORM_V1_TO_V2_PATH = REPO_ROOT / "config_transform_v1_to_v2.py"
+PERSISTENCE_PATH = REPO_ROOT / "config_persistence.py"
 PACKAGING_SPEC_PATH = REPO_ROOT / "DesktopTileLauncher.spec"
 PRODUCTION_ENTRY_PATH = REPO_ROOT / "tile_launcher.py"
-FORBIDDEN_V2_MODULES = frozenset({"config_schema_v2.py", "config_serialization_v2.py"})
+FORBIDDEN_V2_MODULES = frozenset(
+    {
+        "config_migration_v2.py",
+        "config_schema_v2.py",
+        "config_serialization_v2.py",
+        "config_transform_v1_to_v2.py",
+    }
+)
 QT_IMPORT_ROOTS = frozenset({"PyQt5", "PyQt6", "PySide2", "PySide6"})
 
 SCHEMA_PUBLIC_FUNCTIONS = frozenset({"reject_duplicate_json_members", "validate_v2"})
@@ -82,6 +92,18 @@ SERIALIZATION_PUBLIC_NAMES = (
     | SERIALIZATION_PUBLIC_TYPE_ALIASES
     | SERIALIZATION_PUBLIC_CONSTANTS
 )
+MIGRATION_V2_PUBLIC_FUNCTIONS = frozenset({"migrate_v1_to_v2"})
+MIGRATION_V2_PUBLIC_CONSTANTS = frozenset(
+    {"MIGRATION_NAMESPACE_V1_TO_V2", "V1_TO_V2_ID_ALLOCATION_ATTEMPTS"}
+)
+MIGRATION_V2_PUBLIC_NAMES = (
+    MIGRATION_V2_PUBLIC_FUNCTIONS | MIGRATION_V2_PUBLIC_CONSTANTS
+)
+TRANSFORM_V1_TO_V2_PUBLIC_FUNCTIONS = frozenset({"transform_v1_to_v2"})
+TRANSFORM_V1_TO_V2_PUBLIC_TYPE_ALIASES = frozenset({"V1ToV2TransformResult"})
+TRANSFORM_V1_TO_V2_PUBLIC_NAMES = (
+    TRANSFORM_V1_TO_V2_PUBLIC_FUNCTIONS | TRANSFORM_V1_TO_V2_PUBLIC_TYPE_ALIASES
+)
 
 EXPECTED_SCHEMA_IMPORTS = frozenset(
     {
@@ -111,6 +133,31 @@ EXPECTED_SERIALIZATION_IMPORTS = frozenset(
         "from typing import Final",
         "from typing import TypeAlias",
         "import json",
+    }
+)
+EXPECTED_MIGRATION_V2_IMPORTS = frozenset(
+    {
+        "from __future__ import annotations",
+        "from collections.abc import Mapping",
+        "from typing import Final",
+        "from typing import TypeAlias",
+        "from typing import TypedDict",
+        "from typing import cast",
+        "from uuid import UUID",
+        "from uuid import uuid5",
+        "import config_schema as v1",
+        "import config_schema_v2 as v2",
+    }
+)
+EXPECTED_TRANSFORM_V1_TO_V2_IMPORTS = frozenset(
+    {
+        "from __future__ import annotations",
+        "from collections.abc import Mapping",
+        "from typing import TypeAlias",
+        "import config_migration_v2 as construction",
+        "import config_schema as v1",
+        "import config_schema_v2 as v2",
+        "import config_serialization_v2 as serialization",
     }
 )
 
@@ -580,6 +627,8 @@ def test_validation_failure_exposes_no_candidate_content_or_side_channel(
 def test_public_structural_result_and_behavioral_surfaces_are_exact() -> None:
     schema_tree = _parse_path(SCHEMA_PATH)
     serialization_tree = _parse_path(SERIALIZATION_PATH)
+    migration_v2_tree = _parse_path(MIGRATION_V2_PATH)
+    transform_v1_to_v2_tree = _parse_path(TRANSFORM_V1_TO_V2_PATH)
 
     assert _public_functions(schema_tree) == SCHEMA_PUBLIC_FUNCTIONS  # nosec B101
     assert {  # nosec B101
@@ -641,19 +690,74 @@ def test_public_structural_result_and_behavioral_surfaces_are_exact() -> None:
         for node in ast.walk(serialization_tree)
     )
 
+    assert (  # nosec B101
+        _public_functions(migration_v2_tree) == MIGRATION_V2_PUBLIC_FUNCTIONS
+    )
+    assert {  # nosec B101
+        node.name
+        for node in migration_v2_tree.body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    } == set()
+    assert _public_classes(migration_v2_tree, "typed_dict") == set()  # nosec B101
+    assert _public_classes(migration_v2_tree, "dataclass") == set()  # nosec B101
+    assert _public_classes(migration_v2_tree, "enum") == set()  # nosec B101
+    assert _public_classes(migration_v2_tree, "exception") == set()  # nosec B101
+    assert (  # nosec B101
+        _public_annotated_names(migration_v2_tree, "type_alias") == set()
+    )
+    assert (  # nosec B101
+        _public_annotated_names(migration_v2_tree, "constant")
+        == MIGRATION_V2_PUBLIC_CONSTANTS
+    )
+    assert _module_all(migration_v2_tree) == MIGRATION_V2_PUBLIC_NAMES  # nosec B101
+
+    assert (  # nosec B101
+        _public_functions(transform_v1_to_v2_tree)
+        == TRANSFORM_V1_TO_V2_PUBLIC_FUNCTIONS
+    )
+    assert {  # nosec B101
+        node.name
+        for node in transform_v1_to_v2_tree.body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    } == set()
+    assert (  # nosec B101
+        _public_annotated_names(transform_v1_to_v2_tree, "type_alias")
+        == TRANSFORM_V1_TO_V2_PUBLIC_TYPE_ALIASES
+    )
+    assert (  # nosec B101
+        _public_annotated_names(transform_v1_to_v2_tree, "constant") == set()
+    )
+    assert (  # nosec B101
+        _module_all(transform_v1_to_v2_tree) == TRANSFORM_V1_TO_V2_PUBLIC_NAMES
+    )
+
 
 def test_exact_imports_and_focused_json_ast_contracts() -> None:
     schema_tree = _parse_path(SCHEMA_PATH)
     serialization_tree = _parse_path(SERIALIZATION_PATH)
+    migration_v2_tree = _parse_path(MIGRATION_V2_PATH)
+    transform_v1_to_v2_tree = _parse_path(TRANSFORM_V1_TO_V2_PATH)
 
     schema_imports = _import_declarations(schema_tree)
     serialization_imports = _import_declarations(serialization_tree)
+    migration_v2_imports = _import_declarations(migration_v2_tree)
+    transform_v1_to_v2_imports = _import_declarations(transform_v1_to_v2_tree)
     assert len(schema_imports) == len(EXPECTED_SCHEMA_IMPORTS)  # nosec B101
     assert set(schema_imports) == EXPECTED_SCHEMA_IMPORTS  # nosec B101
     assert len(serialization_imports) == len(  # nosec B101
         EXPECTED_SERIALIZATION_IMPORTS
     )
     assert set(serialization_imports) == EXPECTED_SERIALIZATION_IMPORTS  # nosec B101
+    assert len(migration_v2_imports) == len(  # nosec B101
+        EXPECTED_MIGRATION_V2_IMPORTS
+    )
+    assert set(migration_v2_imports) == EXPECTED_MIGRATION_V2_IMPORTS  # nosec B101
+    assert len(transform_v1_to_v2_imports) == len(  # nosec B101
+        EXPECTED_TRANSFORM_V1_TO_V2_IMPORTS
+    )
+    assert (  # nosec B101
+        set(transform_v1_to_v2_imports) == EXPECTED_TRANSFORM_V1_TO_V2_IMPORTS
+    )
 
     # These assertions describe direct JSON-related syntax, not general capabilities.
     assert not any(  # nosec B101
@@ -693,6 +797,61 @@ def test_vocabulary_dependency_is_symbol_only_one_way_and_qt_free() -> None:
             name.split(".", maxsplit=1)[0] for name in _raw_import_names(path)
         }
         assert import_roots.isdisjoint(QT_IMPORT_ROOTS), path  # nosec B101
+
+
+def test_transformer_dependency_closure_is_qt_free_and_not_runtime_rooted() -> None:
+    dependency_closure = _repository_local_import_closure(
+        REPO_ROOT,
+        {MIGRATION_V2_PATH},
+    )
+    relative = _relative_paths(REPO_ROOT, dependency_closure)
+
+    assert {  # nosec B101
+        Path("config_migration_v2.py"),
+        Path("config_schema.py"),
+        Path("config_schema_v2.py"),
+    }.issubset(relative)
+    assert Path("config_migration.py") not in relative  # nosec B101
+    assert Path("tile_launcher.py") not in relative  # nosec B101
+    for path in dependency_closure:
+        import_roots = {
+            name.split(".", maxsplit=1)[0] for name in _raw_import_names(path)
+        }
+        assert import_roots.isdisjoint(QT_IMPORT_ROOTS), path  # nosec B101
+
+
+def test_checked_transform_dependency_closure_is_qt_free_and_excludes_startup() -> None:
+    dependency_closure = _repository_local_import_closure(
+        REPO_ROOT,
+        {TRANSFORM_V1_TO_V2_PATH},
+    )
+    relative = _relative_paths(REPO_ROOT, dependency_closure)
+
+    assert {  # nosec B101
+        Path("config_migration_v2.py"),
+        Path("config_schema_v2.py"),
+        Path("config_serialization_v2.py"),
+        Path("config_transform_v1_to_v2.py"),
+    }.issubset(relative)
+    assert Path("tile_launcher.py") not in relative  # nosec B101
+    for path in dependency_closure:
+        import_roots = {
+            name.split(".", maxsplit=1)[0] for name in _raw_import_names(path)
+        }
+        assert import_roots.isdisjoint(QT_IMPORT_ROOTS), path  # nosec B101
+
+
+def test_persistence_dependency_closure_excludes_dormant_v2() -> None:
+    dependency_closure = _repository_local_import_closure(
+        REPO_ROOT,
+        {PERSISTENCE_PATH},
+    )
+    relative = _relative_paths(REPO_ROOT, dependency_closure)
+
+    assert Path("config_persistence.py") in relative  # nosec B101
+    assert not {path.name for path in relative}.intersection(  # nosec B101
+        FORBIDDEN_V2_MODULES
+    )
 
 
 def test_real_production_and_packaging_closure_excludes_v2() -> None:
