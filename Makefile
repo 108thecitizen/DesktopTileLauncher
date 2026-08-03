@@ -18,8 +18,8 @@ endif
 # Always drive pip via the interpreter so self‑upgrade works on Windows too
 PIP := $(PY) -m pip
 
-# Compute once per make invocation
-ONLINE := $(shell $(PY) tools/netprobe.py >/dev/null 2>&1 && echo 1 || echo 0)
+# Compute only for targets that explicitly need dependency installation.
+ONLINE = $(shell $(PY) tools/netprobe.py >/dev/null 2>&1 && echo 1 || echo 0)
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?##' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "%-14s %s\n", $$1, $$2}'
@@ -88,17 +88,10 @@ test: install-dev ## Run the full test suite (default)
 
 # Exact fail-closed unit-only filter:
 .PHONY: test_unit
-test_unit: install-dev ensure-test-deps ## Run unit tests only (exclude slow/integration/e2e/etc.)
-	@set -euo pipefail; \
-	if $(PY) -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" >/dev/null 2>&1; then \
-	  echo "[test_unit] running pytest (unit filter)"; \
-	  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(PY) -m pytest -q tests \
-	    -m 'unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)' \
-	    -k 'not multi_window and not tray and not lazy_refresh'; \
-	else \
-	  echo "[test_unit] pytest unavailable after dependency setup → aborting"; \
-	  exit 1; \
-	fi
+test_unit: ## Run hermetic unit tests only (exclude slow/integration/e2e/etc.)
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(PY) -m pytest -q tests \
+	  -m 'unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)' \
+	  -k 'not multi_window and not tray and not lazy_refresh'
 
 .PHONY: smoke
 smoke: install-dev ## Import core modules to ensure environment is sane
@@ -121,4 +114,4 @@ reassemble_wheels:
 
 # One-liner that mirrors the Codex task: reassemble + force offline install + run tests
 test_unit_offline: reassemble_wheels
-	@PIP_NO_INDEX=1 PIP_FIND_LINKS="vendor/wheelhouse-linux" $(MAKE) ONLINE=1 test_unit
+	@PIP_NO_INDEX=1 PIP_FIND_LINKS="vendor/wheelhouse-linux" $(MAKE) ONLINE=1 install-dev ensure-test-deps test_unit

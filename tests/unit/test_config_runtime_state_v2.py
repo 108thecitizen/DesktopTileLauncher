@@ -735,6 +735,30 @@ def test_unhashable_flat_state_fields_are_rejected_without_mutation() -> None:
         assert document == original  # nosec B101
 
 
+@pytest.mark.parametrize("invalid_open_target", ["popup", 1])
+def test_invalid_open_target_is_rejected_without_mutation(
+    invalid_open_target: object,
+) -> None:
+    document = _native_document()
+    original = deepcopy(document)
+    projection = _projected(document)
+    malformed = replace(
+        projection,
+        tiles=(
+            replace(
+                projection.tiles[0],
+                open_target=cast(schema.OpenTarget, invalid_open_target),
+            ),
+            *projection.tiles[1:],
+        ),
+    )
+
+    result = runtime_state.synchronize_flat_workspace(document, malformed)
+
+    assert result == runtime_state.FlatStateRejected("invalid_state")  # nosec B101
+    assert document == original  # nosec B101
+
+
 def test_move_remove_and_tab_delete_are_coordinated_and_keep_orphan_resource() -> None:
     document = _two_tab_document()
     projection = _projected(document)

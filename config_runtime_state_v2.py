@@ -389,6 +389,7 @@ def _valid_tile_values(tile: object, tab_ids: set[str]) -> bool:
         )
     ):
         return False
+    open_target: object = tile.open_target
     return (
         _is_utf8_text(tile.tab_id)
         and tile.tab_id in tab_ids
@@ -398,8 +399,8 @@ def _valid_tile_values(tile: object, tab_ids: set[str]) -> bool:
         and _is_utf8_text(tile.background_color)
         and (tile.browser is None or _is_utf8_text(tile.browser))
         and (tile.chrome_profile is None or _is_utf8_text(tile.chrome_profile))
-        and type(tile.open_target) is str
-        and tile.open_target in ("tab", "window")
+        and type(open_target) is str
+        and open_target in ("tab", "window")
     )
 
 
