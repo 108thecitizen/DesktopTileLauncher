@@ -91,6 +91,14 @@ def repo_relative_path(path: Path, repo_root: Path) -> str | None:
         return None
 
 
+def is_pytest_test_module(path: Path) -> bool:
+    """Return whether *path* matches either default pytest module pattern."""
+
+    return path.suffix == ".py" and (
+        path.name.startswith("test_") or path.name.endswith("_test.py")
+    )
+
+
 def should_ignore_test_module(
     path: Path,
     repo_root: Path,
@@ -100,14 +108,11 @@ def should_ignore_test_module(
 
     if not is_unit_only_expression(marker_expression):
         return None
-    if path.suffix != ".py" or not path.name.startswith("test_"):
+    if not is_pytest_test_module(path):
         return None
     relative = repo_relative_path(path, repo_root)
     if relative is None or not relative.startswith("tests/"):
         return True
-    relative_path = Path(relative)
-    if relative_path.suffix != ".py" or not relative_path.name.startswith("test_"):
-        return None
     if relative in QT_FREE_UNIT_TEST_PATHS:
         return None
     return True
@@ -148,6 +153,7 @@ __all__ = [
     "QUARANTINED_TEST_PATHS",
     "UNIT_ONLY_MARK_EXPRESSION",
     "forbidden_loaded_modules",
+    "is_pytest_test_module",
     "is_unit_only_expression",
     "repo_relative_path",
     "should_ignore_test_module",

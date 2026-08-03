@@ -16,6 +16,7 @@ from unit_collection_guard import (
     QUARANTINED_TEST_PATHS,
     UNIT_ONLY_MARK_EXPRESSION,
     forbidden_loaded_modules,
+    is_pytest_test_module,
     should_ignore_test_module,
 )
 
@@ -23,11 +24,14 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS_ROOT = REPO_ROOT / "tests"
+MAKEFILE_PATH = REPO_ROOT / "Makefile"
 
 
 def _test_module_paths() -> frozenset[str]:
     return frozenset(
-        path.relative_to(REPO_ROOT).as_posix() for path in TESTS_ROOT.rglob("test_*.py")
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in TESTS_ROOT.rglob("*.py")
+        if is_pytest_test_module(path)
     )
 
 
@@ -69,15 +73,23 @@ def _local_import_closure(paths: set[Path]) -> set[Path]:
 
 
 def _is_unit_marker(node: ast.AST) -> bool:
-    return any(
+    candidate = node.func if isinstance(node, ast.Call) else node
+    return (
         isinstance(candidate, ast.Attribute)
         and candidate.attr == "unit"
         and isinstance(candidate.value, ast.Attribute)
         and candidate.value.attr == "mark"
         and isinstance(candidate.value.value, ast.Name)
         and candidate.value.value.id == "pytest"
-        for candidate in ast.walk(node)
     )
+
+
+def _contains_direct_unit_marker(node: ast.AST) -> bool:
+    if _is_unit_marker(node):
+        return True
+    if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+        return any(_is_unit_marker(item) for item in node.elts)
+    return False
 
 
 def _module_has_unit_marker(tree: ast.Module) -> bool:
@@ -90,7 +102,7 @@ def _module_has_unit_marker(tree: ast.Module) -> bool:
             )
         )
         and node.value is not None
-        and _is_unit_marker(node.value)
+        and _contains_direct_unit_marker(node.value)
         for node in tree.body
     )
 
@@ -101,7 +113,7 @@ def _unmarked_test_names(path: Path) -> tuple[str, ...]:
     unmarked: list[str] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name.startswith("test_") and not (
+            if node.name.startswith("test") and not (
                 module_marked
                 or any(_is_unit_marker(item) for item in node.decorator_list)
             ):
@@ -115,7 +127,7 @@ def _unmarked_test_names(path: Path) -> tuple[str, ...]:
         for child in node.body:
             if (
                 isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and child.name.startswith("test_")
+                and child.name.startswith("test")
                 and not (
                     class_marked
                     or any(_is_unit_marker(item) for item in child.decorator_list)
@@ -123,6 +135,31 @@ def _unmarked_test_names(path: Path) -> tuple[str, ...]:
             ):
                 unmarked.append(f"{node.name}.{child.name}")
     return tuple(unmarked)
+
+
+def _make_target_recipe(target: str) -> tuple[str, ...]:
+    lines = MAKEFILE_PATH.read_text(encoding="utf-8").splitlines()
+    target_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if not line.startswith((" ", "\t")) and line.partition(":")[0] == target
+        ),
+        None,
+    )
+    if target_index is None:
+        return ()
+
+    recipe: list[str] = []
+    for line in lines[target_index + 1 :]:
+        if line.startswith("\t"):
+            recipe.append(line.strip())
+            continue
+        if line.strip():
+            break
+        if recipe:
+            break
+    return tuple(recipe)
 
 
 def test_every_test_module_is_classified_exactly_once() -> None:
@@ -142,14 +179,15 @@ def test_unit_collection_is_fail_closed_for_quarantined_and_unknown_tests() -> N
             )
             is True
         )
-    assert (  # nosec B101
-        should_ignore_test_module(
-            TESTS_ROOT / "unit" / "test_future_unclassified.py",
-            REPO_ROOT,
-            UNIT_ONLY_MARK_EXPRESSION,
+    for filename in ("test_future_unclassified.py", "future_unclassified_test.py"):
+        assert (  # nosec B101
+            should_ignore_test_module(
+                TESTS_ROOT / "unit" / filename,
+                REPO_ROOT,
+                UNIT_ONLY_MARK_EXPRESSION,
+            )
+            is True
         )
-        is True
-    )
 
 
 def test_unit_collection_allows_only_classified_safe_tests() -> None:
@@ -172,6 +210,45 @@ def test_allowlisted_tests_have_effective_unit_markers() -> None:
     }
 
     assert not violations  # nosec B101
+
+
+def test_nested_parameter_mark_does_not_mark_the_whole_test(tmp_path: Path) -> None:
+    path = tmp_path / "test_nested_parameter_mark.py"
+    path.write_text(
+        "import pytest\n\n"
+        "@pytest.mark.parametrize(\n"
+        "    'value',\n"
+        "    [pytest.param(1, marks=pytest.mark.unit), 2],\n"
+        ")\n"
+        "def testMixedMarking(value: int) -> None:\n"
+        "    del value\n",
+        encoding="utf-8",
+    )
+
+    assert _unmarked_test_names(path) == ("testMixedMarking",)  # nosec B101
+
+
+def test_unit_target_collects_only_the_guarded_tests_tree() -> None:
+    makefile_lines = MAKEFILE_PATH.read_text(encoding="utf-8").splitlines()
+    phony_targets = {
+        target
+        for line in makefile_lines
+        if line.startswith(".PHONY:")
+        for target in line.partition(":")[2].split()
+    }
+    recipe = _make_target_recipe("test_unit")
+    pytest_invocations = tuple(
+        line
+        for line in recipe
+        if "pytest" in line
+        and not line.startswith("echo ")
+        and "find_spec('pytest')" not in line
+    )
+
+    assert "test_unit" in phony_targets  # nosec B101
+    assert pytest_invocations == (  # nosec B101
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(PY) -m pytest -q tests \\",
+    )
 
 
 def test_unit_collection_ignores_external_test_modules() -> None:
