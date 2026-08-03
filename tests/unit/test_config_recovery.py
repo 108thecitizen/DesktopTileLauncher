@@ -256,6 +256,58 @@ def test_malformed_json_and_bom_are_classified(tmp_path: Path, payload: bytes) -
     assert result.category is ConfigLoadFailureCategory.MALFORMED_JSON  # nosec B101
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            b'{"schema_version":1,"schema_version":2}',
+            id="root-member",
+        ),
+        pytest.param(
+            b'{"application":{"title":"one","title":"two"}}',
+            id="nested-member",
+        ),
+        pytest.param(
+            b'{"items":[{"id":"one","id":"two"}]}',
+            id="array-object-member",
+        ),
+        pytest.param(
+            b'{"extensions":{"outer":{"inner":{"secret":1,"secret":2}}}}',
+            id="deep-extensions-member",
+        ),
+        pytest.param(
+            b'{"decoded-name":1,"\\u0064ecoded-name":2}',
+            id="decoded-equivalent-member",
+        ),
+    ],
+)
+def test_duplicate_json_members_are_malformed_before_construction(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_bytes(payload)
+    constructor_called = False
+
+    def constructor(_mapping: dict[str, object]) -> object:
+        nonlocal constructor_called
+        constructor_called = True
+        return object()
+
+    result = load_config(config_path, constructor)
+
+    assert isinstance(result, ConfigRecoveryRequired)  # nosec B101
+    assert result.category is ConfigLoadFailureCategory.MALFORMED_JSON  # nosec B101
+    assert result.snapshot is not None  # nosec B101
+    assert result.snapshot.evidence_is_complete  # nosec B101
+    assert result.snapshot.evidence_byte_count == len(payload)  # nosec B101
+    assert not constructor_called  # nosec B101
+    assert config_path.read_bytes() == payload  # nosec B101
+    assert _recovery_files(config_path) == []  # nosec B101
+    assert _failed_candidate_files(config_path) == []  # nosec B101
+    assert set(tmp_path.iterdir()) == {config_path}  # nosec B101
+
+
 @pytest.mark.parametrize("payload", [b"[]", b'"text"', b"1", b"true", b"null"])
 def test_every_non_object_root_is_rejected(tmp_path: Path, payload: bytes) -> None:
     config_path = tmp_path / "config.json"

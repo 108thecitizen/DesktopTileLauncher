@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeAlias, TypeVar, cast
 
 
 class _SyncableTextStream(Protocol):
@@ -30,6 +30,7 @@ class _SyncableBinaryStream(Protocol):
 
 
 _StreamT = TypeVar("_StreamT", _SyncableTextStream, _SyncableBinaryStream)
+_ExclusivePublishResult: TypeAlias = Literal["consumed", "linked"]
 
 
 def _write_and_sync(stream: _SyncableTextStream, text: str) -> None:
@@ -123,3 +124,50 @@ def atomic_write_bytes(
         _write_bytes_and_sync(stream, data)
 
     _atomic_write(path, temporary, write_and_sync, before_replace=before_replace)
+
+
+def _publish_exclusive(
+    temporary_path: Path,
+    path: Path,
+) -> _ExclusivePublishResult:
+    """Publish without replacement and report the temporary name's lifecycle."""
+
+    if os.name == "nt":
+        os.rename(temporary_path, path)
+        return "consumed"
+    os.link(temporary_path, path)
+    return "linked"
+
+
+def atomic_create_bytes(path: Path, data: bytes) -> None:
+    """Atomically publish exact bytes only when *path* is still absent."""
+
+    temporary = cast(
+        AbstractContextManager[_SyncableBinaryStream],
+        tempfile.NamedTemporaryFile(
+            mode="w+b",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ),
+    )
+    temporary_path: Path | None = None
+    try:
+        with temporary as stream:
+            temporary_path = Path(stream.name)
+            _write_bytes_and_sync(stream, data)
+        publish_result = _publish_exclusive(temporary_path, path)
+        if publish_result == "consumed":
+            temporary_path = None
+        else:
+            linked_temporary_path = temporary_path
+            temporary_path = None
+            linked_temporary_path.unlink()
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                # Preserve the original write/publication error and never touch *path*.
+                pass

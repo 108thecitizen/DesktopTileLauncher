@@ -25,15 +25,17 @@ RUNTIME_V2_PATH = REPO_ROOT / "config_runtime_v2.py"
 PERSISTENCE_PATH = REPO_ROOT / "config_persistence.py"
 PACKAGING_SPEC_PATH = REPO_ROOT / "DesktopTileLauncher.spec"
 PRODUCTION_ENTRY_PATH = REPO_ROOT / "tile_launcher.py"
-FORBIDDEN_V2_MODULES = frozenset(
+ACTIVATED_V2_MODULES = frozenset(
     {
         "config_migration_v2.py",
+        "config_runtime_state_v2.py",
         "config_runtime_v2.py",
         "config_schema_v2.py",
         "config_serialization_v2.py",
-        "config_transform_v1_to_v2.py",
     }
 )
+DORMANT_V2_MODULES = frozenset({"config_transform_v1_to_v2.py"})
+ALL_V2_MODULES = ACTIVATED_V2_MODULES | DORMANT_V2_MODULES
 QT_IMPORT_ROOTS = frozenset({"PyQt5", "PyQt6", "PySide2", "PySide6"})
 
 SCHEMA_PUBLIC_FUNCTIONS = frozenset({"reject_duplicate_json_members", "validate_v2"})
@@ -106,7 +108,9 @@ TRANSFORM_V1_TO_V2_PUBLIC_TYPE_ALIASES = frozenset({"V1ToV2TransformResult"})
 TRANSFORM_V1_TO_V2_PUBLIC_NAMES = (
     TRANSFORM_V1_TO_V2_PUBLIC_FUNCTIONS | TRANSFORM_V1_TO_V2_PUBLIC_TYPE_ALIASES
 )
-RUNTIME_V2_PUBLIC_FUNCTIONS = frozenset({"apply_metadata_refresh", "project_workspace"})
+RUNTIME_V2_PUBLIC_FUNCTIONS = frozenset(
+    {"apply_metadata_refresh", "clone_document", "project_workspace"}
+)
 RUNTIME_V2_PUBLIC_DATACLASSES = frozenset(
     {
         "LaunchSettingsProjection",
@@ -119,6 +123,7 @@ RUNTIME_V2_PUBLIC_DATACLASSES = frozenset(
 )
 RUNTIME_V2_PUBLIC_TYPE_ALIASES = frozenset(
     {
+        "CloneResult",
         "MetadataRefreshResult",
         "RuntimeAdapterFailureCategory",
         "WorkspaceProjectionResult",
@@ -615,7 +620,9 @@ def test_standard_decoder_callback_rejects_duplicates_at_every_nesting_depth(
         assert forbidden not in rendered  # nosec B101
 
 
-def test_valid_fixture_decodes_through_dormant_callback_then_validates() -> None:
+def test_valid_fixture_decodes_through_duplicate_aware_callback_then_validates() -> (
+    None
+):
     parsed = json.loads(
         (FIXTURE_ROOT / "representative.json").read_text(encoding="utf-8"),
         object_pairs_hook=schema.reject_duplicate_json_members,
@@ -835,7 +842,9 @@ def test_exact_imports_and_focused_json_ast_contracts() -> None:
     ] == ["Exception"]
 
 
-def test_vocabulary_dependency_is_symbol_only_one_way_and_qt_free() -> None:
+def test_production_migration_dependency_activates_v2_transform_and_stays_qt_free() -> (
+    None
+):
     migration_path = REPO_ROOT / "config_migration.py"
     dependency_closure = _repository_local_import_closure(
         REPO_ROOT,
@@ -848,10 +857,13 @@ def test_vocabulary_dependency_is_symbol_only_one_way_and_qt_free() -> None:
         Path("config_persistence.py"),
         Path("config_recovery.py"),
         Path("config_schema.py"),
+        Path("config_migration_v2.py"),
+        Path("config_schema_v2.py"),
     }.issubset(relative)
-    assert not {path.name for path in relative}.intersection(  # nosec B101
-        FORBIDDEN_V2_MODULES
-    )
+    assert {path.name for path in relative}.intersection(ALL_V2_MODULES) == {  # nosec B101
+        "config_migration_v2.py",
+        "config_schema_v2.py",
+    }
     for path in dependency_closure:
         import_roots = {
             name.split(".", maxsplit=1)[0] for name in _raw_import_names(path)
@@ -921,7 +933,7 @@ def test_runtime_adapter_dependency_closure_is_qt_free_and_detached() -> None:
         assert import_roots.isdisjoint(QT_IMPORT_ROOTS), path  # nosec B101
 
 
-def test_persistence_dependency_closure_excludes_dormant_v2() -> None:
+def test_low_level_persistence_dependency_closure_remains_schema_agnostic() -> None:
     dependency_closure = _repository_local_import_closure(
         REPO_ROOT,
         {PERSISTENCE_PATH},
@@ -930,11 +942,11 @@ def test_persistence_dependency_closure_excludes_dormant_v2() -> None:
 
     assert Path("config_persistence.py") in relative  # nosec B101
     assert not {path.name for path in relative}.intersection(  # nosec B101
-        FORBIDDEN_V2_MODULES
+        ALL_V2_MODULES
     )
 
 
-def test_real_production_and_packaging_closure_excludes_v2() -> None:
+def test_real_production_and_packaging_closure_contains_exact_activated_v2() -> None:
     closure = _production_and_packaging_closure(
         REPO_ROOT,
         PRODUCTION_ENTRY_PATH,
@@ -944,9 +956,11 @@ def test_real_production_and_packaging_closure_excludes_v2() -> None:
 
     assert Path("url_import.py") in relative  # nosec B101
     assert Path("config_migration.py") in relative  # nosec B101
-    assert not {path.name for path in relative}.intersection(  # nosec B101
-        FORBIDDEN_V2_MODULES
+    relative_names = {path.name for path in relative}
+    assert relative_names.intersection(ALL_V2_MODULES) == (  # nosec B101
+        ACTIVATED_V2_MODULES
     )
+    assert relative_names.isdisjoint(DORMANT_V2_MODULES)  # nosec B101
 
 
 def test_transitive_entry_import_of_v2_is_detected(tmp_path: Path) -> None:
@@ -1100,26 +1114,40 @@ def test_packaging_declarations_fail_closed_when_nonliteral(
         )
 
 
-def test_production_registry_remains_exactly_v0_to_v1_and_rejects_v2() -> None:
+def test_production_registry_is_exactly_v0_to_v2_and_rejects_v3() -> None:
     spec = config_migration.PRODUCTION_REGISTRY_SPEC
     assert spec.oldest_supported_version == 0  # nosec B101
-    assert spec.current_version == 1  # nosec B101
+    assert spec.current_version == 2  # nosec B101
     assert [(step.source_version, step.target_version) for step in spec.steps] == [  # nosec B101
-        (0, 1)
+        (0, 1),
+        (1, 2),
     ]
-    assert [validator.version for validator in spec.validators] == [0, 1]  # nosec B101
+    assert [validator.version for validator in spec.validators] == [  # nosec B101
+        0,
+        1,
+        2,
+    ]
 
     parsed = json.loads(
         (FIXTURE_ROOT / "minimal.json").read_text(encoding="utf-8"),
         object_pairs_hook=schema.reject_duplicate_json_members,
     )
-    result = config_migration.prepare_migration(
+    current = config_migration.prepare_migration(
         cast(config_migration.JsonObject, parsed),
         config_migration.PRODUCTION_REGISTRY,
     )
-
-    assert isinstance(result, config_migration.VersionRejected)  # nosec B101
-    assert (  # nosec B101
-        result.category is config_migration.VersionRejectionCategory.UNSUPPORTED_NEWER
+    future_document = cast(config_migration.JsonObject, dict(parsed))
+    future_document["schema_version"] = 3
+    future = config_migration.prepare_migration(
+        future_document,
+        config_migration.PRODUCTION_REGISTRY,
     )
-    assert result.version == 2  # nosec B101
+
+    assert isinstance(current, config_migration.VersionedCurrent)  # nosec B101
+    assert current.version == 2  # nosec B101
+    assert current.document == parsed  # nosec B101
+    assert isinstance(future, config_migration.VersionRejected)  # nosec B101
+    assert (  # nosec B101
+        future.category is config_migration.VersionRejectionCategory.UNSUPPORTED_NEWER
+    )
+    assert future.version == 3  # nosec B101

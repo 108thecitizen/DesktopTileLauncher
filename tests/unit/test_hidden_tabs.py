@@ -8,8 +8,11 @@ import pytest
 pytest.importorskip("PySide6.QtWidgets")
 
 import config_migration
+import config_migration_v2
 import config_persistence
+import config_runtime_state_v2
 import config_schema
+import config_schema_v2
 import tile_launcher
 from tile_launcher import LauncherConfig, Main
 
@@ -99,7 +102,37 @@ def _runtime_config() -> LauncherConfig:
     ]
     document["extensions"] = copy.deepcopy(_ROOT_EXTENSION)
     assert config_schema.validate_v1(document)  # nosec B101
-    return LauncherConfig.from_v1_mapping(document)
+    v2_document = config_migration_v2.migrate_v1_to_v2(document)
+    assert v2_document is not None  # nosec B101
+    assert config_schema_v2.validate_v2(v2_document)  # nosec B101
+    config = LauncherConfig.from_v2_mapping(v2_document)
+    runtime_order = {
+        name: index
+        for index, name in enumerate(("Main A", "Work X", "Main B", "Archive Z"))
+    }
+    config.tiles.sort(key=lambda tile: runtime_order[tile.name])
+    return config
+
+
+def _project_v2(document: object) -> config_runtime_state_v2.FlatWorkspaceState:
+    assert config_schema_v2.validate_v2(document)  # nosec B101
+    projected = config_runtime_state_v2.project_flat_workspace(document)
+    assert isinstance(  # nosec B101
+        projected,
+        config_runtime_state_v2.FlatWorkspaceState,
+    )
+    return projected
+
+
+def _config_v2_document(config: LauncherConfig) -> dict[str, object]:
+    document = json.loads(config.serialize())
+    assert isinstance(document, dict)  # nosec B101
+    assert config_schema_v2.validate_v2(document)  # nosec B101
+    return document
+
+
+def _fail_v2_size(_update: object) -> bytes:
+    raise ValueError("schema_v2_size_limit_exceeded")
 
 
 class _TabBar:
@@ -224,16 +257,21 @@ def test_hidden_tabs_load_and_save(tmp_path, monkeypatch):
     assert cfg.hidden_tabs == ["Extra"]
     cfg.save()
     data = json.loads(cfg_path.read_text())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
+    assert config_schema_v2.validate_v2(data)  # nosec B101
     assert "hidden_tabs" not in data
     tabs = {tab["name"]: tab for tab in data["tabs"]}
     assert tabs["Main"]["visibility"] == "visible"
     assert tabs["Extra"]["visibility"] == "hidden"
-    assert data["tiles"][0]["tab_id"] == tabs["Extra"]["id"]
+    projection = _project_v2(data)
+    assert projection.tiles[0].tab_id == tabs["Extra"]["id"]  # nosec B101
 
 
 @pytest.mark.unit
-def test_current_v1_load_is_no_write_and_save_preserves_identity(tmp_path, monkeypatch):
+def test_v1_migration_source_loads_as_v2_and_save_preserves_identity(
+    tmp_path,
+    monkeypatch,
+):
     cfg_path = tmp_path / "config.json"
     identifiers = iter(
         (
@@ -251,16 +289,19 @@ def test_current_v1_load_is_no_write_and_save_preserves_identity(tmp_path, monke
     original = json.dumps(
         document, ensure_ascii=False, separators=(", ", ": ")
     ).encode()
+    expected_v2 = config_migration_v2.migrate_v1_to_v2(document)
+    assert expected_v2 is not None  # nosec B101
     cfg_path.write_bytes(original)
     monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
 
-    def forbid_write(*_args, **_kwargs):
-        raise AssertionError("valid current v1 startup must not write")
-
-    monkeypatch.setattr(tile_launcher, "atomic_write_bytes", forbid_write)
     cfg = LauncherConfig.load()
 
-    assert cfg_path.read_bytes() == original
+    migrated = json.loads(cfg_path.read_bytes())
+    assert migrated == expected_v2  # nosec B101
+    assert config_schema_v2.validate_v2(migrated)  # nosec B101
+    recovery_files = list((tmp_path / "recovery").glob("config-*.recovery"))
+    assert len(recovery_files) == 1  # nosec B101
+    assert recovery_files[0].read_bytes() == original  # nosec B101
     assert cfg.workspace_id == "11111111-1111-4111-8111-111111111111"
     assert cfg.workspace_name == "Custom Workspace"
     assert cfg.tab_ids == {"Main": "22222222-2222-4222-8222-222222222222"}
@@ -277,6 +318,8 @@ def test_current_v1_load_is_no_write_and_save_preserves_identity(tmp_path, monke
     cfg.save()
     assert len(writes) == 1
     saved = json.loads(writes[0][1])
+    assert config_schema_v2.validate_v2(saved)  # nosec B101
+    assert saved == _config_v2_document(cfg)  # nosec B101
     assert saved["application"]["default_workspace_id"] == cfg.workspace_id
     assert saved["workspaces"][0]["name"] == "Custom Workspace"
     assert saved["tabs"][0]["id"] == cfg.tab_ids["Main"]
@@ -284,7 +327,42 @@ def test_current_v1_load_is_no_write_and_save_preserves_identity(tmp_path, monke
 
 
 @pytest.mark.unit
-def test_missing_config_constructs_native_v1_and_restart_preserves_ids(
+def test_current_v2_load_is_no_write_and_preserves_identity(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    identifiers = iter((_WORKSPACE_ID, _MAIN_ID))
+    source = config_schema.build_native_v1(lambda: next(identifiers))
+    workspace = source["workspaces"][0]
+    assert isinstance(workspace, dict)  # nosec B101
+    workspace["name"] = "Current V2 Workspace"
+    document = config_migration_v2.migrate_v1_to_v2(source)
+    assert document is not None  # nosec B101
+    original = json.dumps(
+        document,
+        ensure_ascii=False,
+        separators=(", ", ": "),
+    ).encode()
+    cfg_path.write_bytes(original)
+    monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
+
+    def forbid_write(*_args, **_kwargs):
+        raise AssertionError("valid current v2 startup must not write")
+
+    monkeypatch.setattr(tile_launcher, "atomic_write_bytes", forbid_write)
+    monkeypatch.setattr(tile_launcher, "atomic_create_bytes", forbid_write)
+    monkeypatch.setattr(config_migration, "atomic_write_bytes", forbid_write)
+
+    cfg = LauncherConfig.load()
+
+    assert cfg_path.read_bytes() == original  # nosec B101
+    assert cfg.workspace_id == _WORKSPACE_ID  # nosec B101
+    assert cfg.workspace_name == "Current V2 Workspace"  # nosec B101
+    assert cfg.tab_ids == {"Main": _MAIN_ID}  # nosec B101
+    assert _config_v2_document(cfg) == document  # nosec B101
+    assert list((tmp_path / "recovery").glob("config-*.recovery")) == []
+
+
+@pytest.mark.unit
+def test_missing_config_constructs_native_v2_and_restart_preserves_ids(
     tmp_path, monkeypatch
 ):
     cfg_path = tmp_path / "config.json"
@@ -294,7 +372,7 @@ def test_missing_config_constructs_native_v1_and_restart_preserves_ids(
     original = cfg_path.read_bytes()
     document = json.loads(original)
 
-    assert config_schema.validate_v1(document)
+    assert config_schema_v2.validate_v2(document)
     assert created.title == "My Launcher"
     assert created.workspace_name == "Default Workspace"
     assert created.tabs == ["Main"]
@@ -302,9 +380,10 @@ def test_missing_config_constructs_native_v1_and_restart_preserves_ids(
     created_ids = (created.workspace_id, dict(created.tab_ids))
 
     def forbid_write(*_args, **_kwargs):
-        raise AssertionError("valid current v1 restart must not write")
+        raise AssertionError("valid current v2 restart must not write")
 
     monkeypatch.setattr(tile_launcher, "atomic_write_bytes", forbid_write)
+    monkeypatch.setattr(tile_launcher, "atomic_create_bytes", forbid_write)
     monkeypatch.setattr(config_migration, "atomic_write_bytes", forbid_write)
     restarted = LauncherConfig.load()
 
@@ -313,7 +392,7 @@ def test_missing_config_constructs_native_v1_and_restart_preserves_ids(
 
 
 @pytest.mark.unit
-def test_q3_preserve_and_reset_installs_the_same_native_v1(tmp_path, monkeypatch):
+def test_q3_preserve_and_reset_installs_the_same_native_v2(tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.json"
     original = b'{"malformed":'
     cfg_path.write_bytes(original)
@@ -328,8 +407,8 @@ def test_q3_preserve_and_reset_installs_the_same_native_v1(tmp_path, monkeypatch
 
     assert isinstance(startup, tile_launcher._StartupReady)
     document = json.loads(cfg_path.read_bytes())
-    assert config_schema.validate_v1(document)
-    assert startup.config.to_v1_mapping() == document
+    assert config_schema_v2.validate_v2(document)
+    assert _config_v2_document(startup.config) == document
     assert startup.config.title == "My Launcher"
     assert startup.config.workspace_name == "Default Workspace"
     recovery_files = list((tmp_path / "recovery").glob("config-*.recovery"))
@@ -346,7 +425,7 @@ def test_q3_preserve_and_reset_installs_the_same_native_v1(tmp_path, monkeypatch
         ("persistence", "persistence_failure"),
     ),
 )
-def test_missing_native_v1_failure_exits_safely_without_residue(
+def test_missing_native_v2_failure_exits_safely_without_residue(
     tmp_path,
     monkeypatch,
     failure_mode,
@@ -359,21 +438,21 @@ def test_missing_native_v1_failure_exits_safely_without_residue(
     if failure_mode == "construction":
 
         def fail_build(_allocator):
-            raise config_schema.NativeV1ConstructionError
+            raise tile_launcher.NativeV2ConstructionError("identity_allocation_failure")
 
-        monkeypatch.setattr(tile_launcher, "build_native_v1", fail_build)
+        monkeypatch.setattr(tile_launcher, "build_native_v2", fail_build)
     elif failure_mode == "validation":
         monkeypatch.setattr(
             tile_launcher,
-            "build_native_v1",
-            lambda _allocator: {"schema_version": 1},
+            "build_native_v2",
+            lambda _allocator: {"schema_version": 2},
         )
     else:
 
         def fail_write(_path, _payload):
             raise OSError(sensitive)
 
-        monkeypatch.setattr(tile_launcher, "atomic_write_bytes", fail_write)
+        monkeypatch.setattr(tile_launcher, "atomic_create_bytes", fail_write)
 
     breadcrumbs = []
     shown_errors = []
@@ -440,9 +519,9 @@ def test_q3_native_reset_candidate_failure_is_controlled_and_non_mutating(
     if failure_mode == "construction":
 
         def fail_build(_allocator):
-            raise config_schema.NativeV1ConstructionError
+            raise tile_launcher.NativeV2ConstructionError("identity_allocation_failure")
 
-        monkeypatch.setattr(tile_launcher, "build_native_v1", fail_build)
+        monkeypatch.setattr(tile_launcher, "build_native_v2", fail_build)
     else:
 
         def fail_serialization(_config):
@@ -492,7 +571,7 @@ def test_q3_native_reset_candidate_failure_is_controlled_and_non_mutating(
 
 
 @pytest.mark.unit
-def test_runtime_tab_and_tile_actions_preserve_identity_and_strict_v1(
+def test_runtime_tab_and_tile_actions_preserve_identity_and_strict_v2(
     tmp_path,
     monkeypatch,
 ):
@@ -507,7 +586,7 @@ def test_runtime_tab_and_tile_actions_preserve_identity_and_strict_v1(
 
     def capture_write(path, payload):
         document = json.loads(payload)
-        assert config_schema.validate_v1(document)  # nosec B101
+        assert config_schema_v2.validate_v2(document)  # nosec B101
         writes.append(document)
         real_atomic_write(path, payload)
 
@@ -515,10 +594,11 @@ def test_runtime_tab_and_tile_actions_preserve_identity_and_strict_v1(
 
     def assert_committed(expected_write_count):
         assert len(writes) == expected_write_count  # nosec B101
-        runtime_document = harness.cfg.to_v1_mapping()
+        runtime_document = _config_v2_document(harness.cfg)
         persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert config_schema.validate_v1(runtime_document)  # nosec B101
+        assert config_schema_v2.validate_v2(runtime_document)  # nosec B101
         assert persisted == runtime_document == writes[-1]  # nosec B101
+        projected = _project_v2(persisted)
         application = persisted["application"]
         workspace = persisted["workspaces"][0]
         assert application["title"] == "Independent Application Title"  # nosec B101
@@ -527,6 +607,12 @@ def test_runtime_tab_and_tile_actions_preserve_identity_and_strict_v1(
         assert workspace["id"] == _WORKSPACE_ID  # nosec B101
         assert workspace["name"] == "Custom Workspace"  # nosec B101
         assert workspace["tab_order"] == harness.cfg.tab_order  # nosec B101
+        assert list(projected.tab_order) == harness.cfg.tab_order  # nosec B101
+        assert [tab.name for tab in projected.tabs] == harness.cfg.tabs  # nosec B101
+        for tab_id in projected.tab_order:
+            assert [  # nosec B101
+                tile.name for tile in projected.tiles if tile.tab_id == tab_id
+            ] == [tile.name for tile in harness.cfg.tiles if tile.tab_id == tab_id]
         assert harness.cfg.tab_order == [  # nosec B101
             harness.cfg.tab_ids[name] for name in harness.cfg.tabs
         ]
@@ -674,7 +760,7 @@ def test_runtime_tab_and_tile_actions_preserve_identity_and_strict_v1(
 
 
 @pytest.mark.unit
-def test_auto_fit_toggle_persists_one_complete_strict_v1_document(
+def test_auto_fit_toggle_persists_one_complete_strict_v2_document(
     tmp_path,
     monkeypatch,
 ):
@@ -682,7 +768,7 @@ def test_auto_fit_toggle_persists_one_complete_strict_v1_document(
     cfg = _runtime_config()
     monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
     cfg.save()
-    baseline = copy.deepcopy(cfg.to_v1_mapping())
+    baseline = copy.deepcopy(_config_v2_document(cfg))
     harness = _RuntimeHarness(cfg, current_tab="Work")
     harness._computed_columns = 23
     harness.auto_fit_action.checked = False
@@ -692,7 +778,7 @@ def test_auto_fit_toggle_persists_one_complete_strict_v1_document(
 
     def capture_write(path, payload):
         document = json.loads(payload)
-        assert config_schema.validate_v1(document)  # nosec B101
+        assert config_schema_v2.validate_v2(document)  # nosec B101
         writes.append(document)
         real_atomic_write(path, payload)
 
@@ -707,11 +793,19 @@ def test_auto_fit_toggle_persists_one_complete_strict_v1_document(
     )
     assert len(writes) == 1  # nosec B101
     persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
-    assert persisted == writes[0] == harness.cfg.to_v1_mapping()  # nosec B101
-    assert config_schema.validate_v1(persisted)  # nosec B101
+    assert persisted == writes[0] == _config_v2_document(harness.cfg)  # nosec B101
+    assert config_schema_v2.validate_v2(persisted)  # nosec B101
     expected = copy.deepcopy(baseline)
-    expected["auto_fit"] = False
+    expected_window_binding = next(
+        binding
+        for binding in expected["device_bindings"]
+        if binding["subject_kind"] == "workspace"
+        and binding["subject_id"] == _WORKSPACE_ID
+        and binding["applicability"]["kind"] == "portable_fallback"
+    )
+    expected_window_binding["settings"]["auto_fit"] = False
     assert persisted == expected  # nosec B101
+    assert _project_v2(persisted).auto_fit is False  # nosec B101
     assert harness.cfg.auto_fit is False  # nosec B101
     assert harness._computed_columns == harness.cfg.columns  # nosec B101
     assert harness.auto_fit_action.checked is False  # nosec B101
@@ -733,7 +827,7 @@ def test_auto_fit_size_failure_rolls_back_live_and_action_state(
     monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
     cfg.save()
     baseline_bytes = cfg_path.read_bytes()
-    baseline_mapping = copy.deepcopy(cfg.to_v1_mapping())
+    baseline_mapping = copy.deepcopy(_config_v2_document(cfg))
     harness = _RuntimeHarness(cfg, current_tab="Work")
     harness._computed_columns = 23
     harness.auto_fit_action.checked = False
@@ -750,21 +844,29 @@ def test_auto_fit_size_failure_rolls_back_live_and_action_state(
         "critical",
         lambda parent, title, text: messages.append((parent, title, text)),
     )
-    monkeypatch.setattr(tile_launcher, "MAX_CONFIG_BYTES", len(baseline_bytes))
 
     def forbid_atomic_write(*_args, **_kwargs):
         raise AssertionError("the oversized document must be rejected before writing")
 
-    monkeypatch.setattr(tile_launcher, "atomic_write_bytes", forbid_atomic_write)
-
-    Main._toggle_auto_fit(harness, False)
+    with monkeypatch.context() as size_limit_patch:
+        size_limit_patch.setattr(
+            LauncherConfig,
+            "_payload_for_update",
+            staticmethod(_fail_v2_size),
+        )
+        size_limit_patch.setattr(
+            tile_launcher,
+            "atomic_write_bytes",
+            forbid_atomic_write,
+        )
+        Main._toggle_auto_fit(harness, False)
 
     assert harness.cfg is cfg  # nosec B101
     assert all(  # nosec B101
         current is original
         for current, original in zip(harness.cfg.tiles, live_tiles, strict=True)
     )
-    assert harness.cfg.to_v1_mapping() == baseline_mapping  # nosec B101
+    assert _config_v2_document(harness.cfg) == baseline_mapping  # nosec B101
     assert cfg_path.read_bytes() == baseline_bytes  # nosec B101
     assert harness.cfg.auto_fit is True  # nosec B101
     assert harness._computed_columns == 23  # nosec B101
@@ -804,7 +906,7 @@ def test_auto_fit_size_failure_rolls_back_live_and_action_state(
 
 
 @pytest.mark.unit
-def test_add_tile_with_strict_v1_preserves_identity_and_extension_state(
+def test_add_tile_with_strict_v2_preserves_identity_and_extension_state(
     tmp_path,
     monkeypatch,
 ):
@@ -812,7 +914,7 @@ def test_add_tile_with_strict_v1_preserves_identity_and_extension_state(
     cfg = _runtime_config()
     monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
     cfg.save()
-    baseline = copy.deepcopy(cfg.to_v1_mapping())
+    baseline = copy.deepcopy(_config_v2_document(cfg))
     baseline_tab_ids = dict(cfg.tab_ids)
     baseline_tab_order = list(cfg.tab_order)
     live_tiles = tuple(cfg.tiles)
@@ -835,7 +937,7 @@ def test_add_tile_with_strict_v1_preserves_identity_and_extension_state(
 
     def capture_write(path, payload):
         document = json.loads(payload)
-        assert config_schema.validate_v1(document)  # nosec B101
+        assert config_schema_v2.validate_v2(document)  # nosec B101
         writes.append(document)
         real_atomic_write(path, payload)
 
@@ -872,13 +974,22 @@ def test_add_tile_with_strict_v1_preserves_identity_and_extension_state(
     ]
     assert len(writes) == 1  # nosec B101
     persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
-    assert persisted == writes[0] == cfg.to_v1_mapping()  # nosec B101
-    assert config_schema.validate_v1(persisted)  # nosec B101
-    assert {key: value for key, value in persisted.items() if key != "tiles"} == {
-        key: value for key, value in baseline.items() if key != "tiles"
-    }  # nosec B101
-    assert persisted["tiles"][:-1] == baseline["tiles"]  # nosec B101
-    assert persisted["tiles"][-1]["tab_id"] == _WORK_ID  # nosec B101
+    assert persisted == writes[0] == _config_v2_document(cfg)  # nosec B101
+    assert config_schema_v2.validate_v2(persisted)  # nosec B101
+    assert persisted["application"] == baseline["application"]  # nosec B101
+    assert persisted["workspaces"] == baseline["workspaces"]  # nosec B101
+    assert persisted["extensions"] == baseline["extensions"]  # nosec B101
+    assert persisted["resources"][:-1] == baseline["resources"]  # nosec B101
+    assert persisted["placements"][:-1] == baseline["placements"]  # nosec B101
+    assert persisted["device_bindings"][:-1] == baseline["device_bindings"]
+    projected = _project_v2(persisted)
+    assert [tile.name for tile in projected.tiles if tile.tab_id == _WORK_ID] == [
+        "Work X",
+        "Work Y",
+    ]  # nosec B101
+    assert cfg.tiles[-1].placement_id is not None  # nosec B101
+    assert cfg.tiles[-1].resource_id is not None  # nosec B101
+    assert cfg.tiles[-1].launch_binding_id is not None  # nosec B101
     assert harness.current_tab() == "Work"  # nosec B101
     assert harness.selected_tabs == ["Work"]  # nosec B101
     assert harness.rebuild_count == 1  # nosec B101
@@ -887,7 +998,7 @@ def test_add_tile_with_strict_v1_preserves_identity_and_extension_state(
 
 
 @pytest.mark.unit
-def test_add_tile_persistence_failure_restores_strict_v1_live_identity(
+def test_add_tile_persistence_failure_restores_strict_v2_live_identity(
     tmp_path,
     monkeypatch,
 ):
@@ -896,7 +1007,7 @@ def test_add_tile_persistence_failure_restores_strict_v1_live_identity(
     monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
     cfg.save()
     baseline_bytes = cfg_path.read_bytes()
-    baseline_mapping = copy.deepcopy(cfg.to_v1_mapping())
+    baseline_mapping = copy.deepcopy(_config_v2_document(cfg))
     live_tiles = tuple(cfg.tiles)
     harness = _RuntimeHarness(cfg, current_tab="Work")
     sensitive_name = "Private work tile"
@@ -921,7 +1032,7 @@ def test_add_tile_persistence_failure_restores_strict_v1_live_identity(
 
     def capture_candidate(path, payload):
         document = json.loads(payload)
-        assert config_schema.validate_v1(document)  # nosec B101
+        assert config_schema_v2.validate_v2(document)  # nosec B101
         attempted_documents.append(document)
         real_atomic_write(path, payload)
 
@@ -944,14 +1055,18 @@ def test_add_tile_persistence_failure_restores_strict_v1_live_identity(
     Main.add_tile(harness)
 
     assert len(attempted_documents) == 1  # nosec B101
-    assert attempted_documents[0]["tiles"][-1]["tab_id"] == _WORK_ID  # nosec B101
+    attempted = _project_v2(attempted_documents[0])
+    attempted_tile = next(
+        tile for tile in attempted.tiles if tile.name == sensitive_name
+    )
+    assert attempted_tile.tab_id == _WORK_ID  # nosec B101
     assert harness.cfg is cfg  # nosec B101
     assert len(harness.cfg.tiles) == len(live_tiles)  # nosec B101
     assert all(  # nosec B101
         current is original
         for current, original in zip(harness.cfg.tiles, live_tiles, strict=True)
     )
-    assert harness.cfg.to_v1_mapping() == baseline_mapping  # nosec B101
+    assert _config_v2_document(harness.cfg) == baseline_mapping  # nosec B101
     assert cfg_path.read_bytes() == baseline_bytes  # nosec B101
     assert harness.current_tab() == "Work"  # nosec B101
     assert harness.selected_tabs == ["Work"]  # nosec B101
@@ -997,7 +1112,7 @@ def test_close_geometry_save_failures_restore_state_and_leave_no_residue(
     monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
     cfg.save()
     baseline_bytes = cfg_path.read_bytes()
-    baseline_mapping = copy.deepcopy(cfg.to_v1_mapping())
+    baseline_mapping = copy.deepcopy(_config_v2_document(cfg))
     live_tiles = tuple(cfg.tiles)
     breadcrumbs = []
     monkeypatch.setattr(
@@ -1008,9 +1123,9 @@ def test_close_geometry_save_failures_restore_state_and_leave_no_residue(
 
     with monkeypatch.context() as size_limit_patch:
         size_limit_patch.setattr(
-            tile_launcher,
-            "MAX_CONFIG_BYTES",
-            len(baseline_bytes),
+            LauncherConfig,
+            "_payload_for_update",
+            staticmethod(_fail_v2_size),
         )
         saved = tile_launcher._persist_close_geometry(
             cfg,
@@ -1021,7 +1136,7 @@ def test_close_geometry_save_failures_restore_state_and_leave_no_residue(
         )
 
     assert saved is False  # nosec B101
-    assert cfg.to_v1_mapping() == baseline_mapping  # nosec B101
+    assert _config_v2_document(cfg) == baseline_mapping  # nosec B101
     assert cfg_path.read_bytes() == baseline_bytes  # nosec B101
     assert tuple(cfg.tiles) == live_tiles  # nosec B101
     assert all(  # nosec B101
@@ -1045,7 +1160,7 @@ def test_close_geometry_save_failures_restore_state_and_leave_no_residue(
         )
 
     assert saved is False  # nosec B101
-    assert cfg.to_v1_mapping() == baseline_mapping  # nosec B101
+    assert _config_v2_document(cfg) == baseline_mapping  # nosec B101
     assert cfg_path.read_bytes() == baseline_bytes  # nosec B101
     assert all(  # nosec B101
         current is original
@@ -1085,7 +1200,7 @@ def test_runtime_size_and_validation_failures_roll_back_live_identity_graph(
     monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
     cfg.save()
     baseline_bytes = cfg_path.read_bytes()
-    baseline_mapping = copy.deepcopy(cfg.to_v1_mapping())
+    baseline_mapping = copy.deepcopy(_config_v2_document(cfg))
     harness = _RuntimeHarness(cfg)
     live_config = harness.cfg
     live_main_tile = harness.cfg.tiles[0]
@@ -1102,12 +1217,17 @@ def test_runtime_size_and_validation_failures_roll_back_live_identity_graph(
         lambda parent, title, text: messages.append((parent, title, text)),
     )
 
-    monkeypatch.setattr(tile_launcher, "MAX_CONFIG_BYTES", len(baseline_bytes))
-    Main.duplicate_tile(harness, harness.cfg.tiles[0])
+    with monkeypatch.context() as size_limit_patch:
+        size_limit_patch.setattr(
+            LauncherConfig,
+            "_payload_for_update",
+            staticmethod(_fail_v2_size),
+        )
+        Main.duplicate_tile(harness, harness.cfg.tiles[0])
 
     assert harness.cfg is live_config  # nosec B101
     assert harness.cfg.tiles[0] is live_main_tile  # nosec B101
-    assert harness.cfg.to_v1_mapping() == baseline_mapping  # nosec B101
+    assert _config_v2_document(harness.cfg) == baseline_mapping  # nosec B101
     assert cfg_path.read_bytes() == baseline_bytes  # nosec B101
     assert breadcrumbs[-1] == (  # nosec B101
         "config_change_save_failed",
@@ -1129,7 +1249,7 @@ def test_runtime_size_and_validation_failures_roll_back_live_identity_graph(
     )
 
     def reject_save(_config):
-        raise ValueError("invalid_schema_v1_runtime_state")
+        raise ValueError("invalid_schema_v2_runtime_state")
 
     monkeypatch.setattr(LauncherConfig, "save", reject_save)
     Main.rename_tab(harness)
@@ -1138,7 +1258,7 @@ def test_runtime_size_and_validation_failures_roll_back_live_identity_graph(
     assert any(tile is live_work_tile for tile in harness.cfg.tiles)  # nosec B101
     assert live_work_tile.tab == "Work"  # nosec B101
     assert live_work_tile.tab_id == _WORK_ID  # nosec B101
-    assert harness.cfg.to_v1_mapping() == baseline_mapping  # nosec B101
+    assert _config_v2_document(harness.cfg) == baseline_mapping  # nosec B101
     assert cfg_path.read_bytes() == baseline_bytes  # nosec B101
     assert breadcrumbs[-1] == (  # nosec B101
         "config_change_save_failed",
@@ -1157,11 +1277,11 @@ def test_runtime_utf8_encoding_failure_is_fixed_and_context_free(
     monkeypatch,
 ) -> None:
     cfg = _runtime_config()
-    monkeypatch.setattr(LauncherConfig, "serialize", lambda _config: "\ud800")
+    cfg.title = "\ud800"
 
     with pytest.raises(ValueError) as exc_info:
         cfg._serialized_payload()
 
-    assert exc_info.value.args == ("invalid_schema_v1_runtime_state",)  # nosec B101
+    assert exc_info.value.args == ("invalid_schema_v2_runtime_state",)  # nosec B101
     assert exc_info.value.__cause__ is None  # nosec B101
     assert exc_info.value.__context__ is None  # nosec B101

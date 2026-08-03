@@ -230,6 +230,12 @@ def test_nested_parameter_mark_does_not_mark_the_whole_test(tmp_path: Path) -> N
 
 def test_unit_target_collects_only_the_guarded_tests_tree() -> None:
     makefile_lines = MAKEFILE_PATH.read_text(encoding="utf-8").splitlines()
+    target_declaration = next(
+        line
+        for line in makefile_lines
+        if not line.startswith((" ", "\t")) and line.partition(":")[0] == "test_unit"
+    )
+    prerequisites = target_declaration.partition(":")[2].partition("##")[0].split()
     phony_targets = {
         target
         for line in makefile_lines
@@ -246,9 +252,19 @@ def test_unit_target_collects_only_the_guarded_tests_tree() -> None:
     )
 
     assert "test_unit" in phony_targets  # nosec B101
+    assert not prerequisites  # nosec B101
     assert pytest_invocations == (  # nosec B101
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(PY) -m pytest -q tests \\",
     )
+
+
+def test_make_online_probe_is_lazy() -> None:
+    makefile_lines = MAKEFILE_PATH.read_text(encoding="utf-8").splitlines()
+    online_assignment = next(
+        line for line in makefile_lines if line.startswith("ONLINE ")
+    )
+
+    assert online_assignment.startswith("ONLINE = ")  # nosec B101
 
 
 def test_unit_collection_ignores_external_test_modules() -> None:

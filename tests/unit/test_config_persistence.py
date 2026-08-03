@@ -8,7 +8,11 @@ from typing import Any
 import pytest
 
 import config_persistence
-from config_persistence import atomic_write_bytes, atomic_write_text
+from config_persistence import (
+    atomic_create_bytes,
+    atomic_write_bytes,
+    atomic_write_text,
+)
 
 
 pytestmark = pytest.mark.unit
@@ -147,6 +151,114 @@ def test_atomic_write_bytes_preserves_exact_mixed_newline_and_unicode_bytes(
 
     assert config_path.read_bytes() == payload  # nosec B101
     assert set(tmp_path.iterdir()) == {config_path}  # nosec B101
+
+
+def test_atomic_create_bytes_publishes_complete_missing_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    payload = b"complete native configuration"
+
+    atomic_create_bytes(config_path, payload)
+
+    assert config_path.read_bytes() == payload  # nosec B101
+    assert set(tmp_path.iterdir()) == {config_path}  # nosec B101
+
+
+def test_atomic_create_bytes_never_replaces_existing_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    original = b"concurrent winner"
+    config_path.write_bytes(original)
+
+    with pytest.raises(FileExistsError):
+        atomic_create_bytes(config_path, b"native candidate")
+
+    assert config_path.read_bytes() == original  # nosec B101
+    assert set(tmp_path.iterdir()) == {config_path}  # nosec B101
+
+
+def test_atomic_create_late_race_preserves_winner_and_cleans_owned_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    winner = b"late concurrent winner"
+    real_publish = config_persistence._publish_exclusive
+
+    def publish_after_race(
+        temporary_path: Path,
+        destination: Path,
+    ) -> config_persistence._ExclusivePublishResult:
+        destination.write_bytes(winner)
+        return real_publish(temporary_path, destination)
+
+    monkeypatch.setattr(
+        config_persistence,
+        "_publish_exclusive",
+        publish_after_race,
+    )
+
+    with pytest.raises(FileExistsError):
+        atomic_create_bytes(config_path, b"native candidate")
+
+    assert config_path.read_bytes() == winner  # nosec B101
+    assert set(tmp_path.iterdir()) == {config_path}  # nosec B101
+
+
+def test_atomic_create_does_not_unlink_reused_name_after_consuming_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    payload = b"native candidate"
+    replacement = b"unowned replacement"
+    reused_paths: list[Path] = []
+
+    def consume_then_reuse(temporary_path: Path, destination: Path) -> str:
+        config_persistence.os.rename(temporary_path, destination)
+        temporary_path.write_bytes(replacement)
+        reused_paths.append(temporary_path)
+        return "consumed"
+
+    monkeypatch.setattr(config_persistence, "_publish_exclusive", consume_then_reuse)
+
+    atomic_create_bytes(config_path, payload)
+
+    assert config_path.read_bytes() == payload  # nosec B101
+    assert len(reused_paths) == 1  # nosec B101
+    assert reused_paths[0].read_bytes() == replacement  # nosec B101
+
+
+def test_atomic_create_reports_linked_temp_cleanup_failure_without_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    payload = b"native candidate"
+    linked_paths: list[Path] = []
+    unlink_attempts = 0
+    real_unlink = Path.unlink
+
+    def publish_as_linked(temporary_path: Path, destination: Path) -> str:
+        destination.write_bytes(temporary_path.read_bytes())
+        linked_paths.append(temporary_path)
+        return "linked"
+
+    def reject_linked_cleanup(path: Path, *, missing_ok: bool = False) -> None:
+        nonlocal unlink_attempts
+        if linked_paths and path == linked_paths[0]:
+            unlink_attempts += 1
+            raise OSError("synthetic linked-temp cleanup failure")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(config_persistence, "_publish_exclusive", publish_as_linked)
+    monkeypatch.setattr(Path, "unlink", reject_linked_cleanup)
+
+    with pytest.raises(OSError, match="synthetic linked-temp cleanup failure"):
+        atomic_create_bytes(config_path, payload)
+
+    assert config_path.read_bytes() == payload  # nosec B101
+    assert unlink_attempts == 1  # nosec B101
+    assert len(linked_paths) == 1  # nosec B101
+    assert linked_paths[0].read_bytes() == payload  # nosec B101
 
 
 def test_atomic_byte_write_failure_preserves_original_and_cleans_temporary_file(

@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
+
+import config_schema_v2
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6.QtWidgets")
@@ -206,6 +210,62 @@ def test_import_saves_detached_candidate_once_then_commits_in_source_order(
         assert tile.open_target == "tab"
 
 
+def test_import_persists_real_v2_candidate_and_commits_new_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path = tmp_path / "config.json"
+    original = _config()
+    monkeypatch.setattr(tile_launcher, "CFG_PATH", cfg_path)
+    original.save()
+    assert original._v2_document is not None  # nosec B101
+    baseline = copy.deepcopy(original._v2_document)
+    harness = _MainHarness(original, current_tab="Work")
+    dialog = _Dialog(
+        destination="Work",
+        selections=(
+            _Selection(8, "Second", "https://second.example.test/"),
+            _Selection(3, "First", "https://first.example.test/"),
+        ),
+    )
+    _install_dialog(monkeypatch, dialog)
+
+    Main.import_urls(harness)
+
+    candidate = harness.cfg
+    document = candidate._v2_document
+    assert candidate is not original  # nosec B101
+    assert original._v2_document == baseline  # nosec B101
+    assert document is not None  # nosec B101
+    assert config_schema_v2.validate_v2(document)  # nosec B101
+    persisted = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert persisted == document  # nosec B101
+    assert document["extensions"] == baseline["extensions"]  # nosec B101
+    assert (
+        document["application"]["extensions"]
+        == (  # nosec B101
+            baseline["application"]["extensions"]
+        )
+    )
+    imported = candidate.tiles[-2:]
+    assert [tile.name for tile in imported] == ["First", "Second"]  # nosec B101
+    assert all(  # nosec B101
+        tile.placement_id is not None
+        and tile.resource_id is not None
+        and tile.launch_binding_id is not None
+        for tile in imported
+    )
+    destination_id = candidate.tab_ids["Work"]
+    destination = next(tab for tab in document["tabs"] if tab["id"] == destination_id)
+    imported_placement_ids = [tile.placement_id for tile in imported]
+    assert destination["display_order"][-2:] == imported_placement_ids  # nosec B101
+    assert destination["kanban_order"]["in_use"][-2:] == (  # nosec B101
+        imported_placement_ids
+    )
+    assert harness.rebuild_count == 1  # nosec B101
+    assert harness.selected_tabs == ["Work"]  # nosec B101
+
+
 def test_import_into_hidden_tab_never_unhides_or_selects_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -262,8 +322,8 @@ def test_refresh_detached_candidate_preserves_identity_and_extension_state() -> 
     ("failure", "expected_category"),
     (
         (OSError(_SENSITIVE_PATH), "persistence_failure"),
-        (ValueError("invalid_schema_v1_runtime_state"), "validation_failure"),
-        (ValueError("schema_v1_size_limit_exceeded"), "size_limit_exceeded"),
+        (ValueError("invalid_schema_v2_runtime_state"), "validation_failure"),
+        (ValueError("schema_v2_size_limit_exceeded"), "size_limit_exceeded"),
     ),
 )
 def test_save_failure_keeps_live_config_and_review_state_without_rebuild(
@@ -326,7 +386,7 @@ def test_save_failure_keeps_live_config_and_review_state_without_rebuild(
     ]
 
 
-def test_actual_over_limit_import_keeps_live_review_and_file_exact(
+def test_v2_size_limit_import_keeps_live_review_and_file_exact(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -353,7 +413,15 @@ def test_actual_over_limit_import_keeps_live_review_and_file_exact(
         "critical",
         lambda parent, title, text: errors.append((parent, title, text)),
     )
-    monkeypatch.setattr(tile_launcher, "MAX_CONFIG_BYTES", len(baseline_bytes))
+
+    def reject_oversized_v2(_update: object) -> bytes:
+        raise ValueError("schema_v2_size_limit_exceeded")
+
+    monkeypatch.setattr(
+        LauncherConfig,
+        "_payload_for_update",
+        staticmethod(reject_oversized_v2),
+    )
 
     Main.import_urls(harness)
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bounded, Qt-free loading and explicit recovery for ``config.json``.
 
-Normal parsing admits at most four MiB of encoded JSON.  Explicit recovery may
+Duplicate-aware parsing admits at most four MiB of encoded JSON.  Explicit recovery may
 stream a larger regular file with bounded memory after the user has chosen to
 preserve it.  The final source comparison and ``os.replace`` are adjacent, but
 portable Python does not provide a kernel-level compare-and-swap for file
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Final, Generic, Literal, Protocol, TypeAlias, TypeVar, cast
 
 from config_persistence import atomic_write_text
+from config_schema_v2 import reject_duplicate_json_members
 
 MAX_CONFIG_BYTES: Final = 4 * 1024 * 1024
 _IO_CHUNK_BYTES: Final = 64 * 1024
@@ -526,7 +527,7 @@ def load_raw_config(
         return ConfigRecoveryRequired(ConfigLoadFailureCategory.INVALID_UTF8, snapshot)
 
     try:
-        parsed = json.loads(decoded)
+        parsed = json.loads(decoded, object_pairs_hook=reject_duplicate_json_members)
     except (ValueError, RecursionError):
         return ConfigRecoveryRequired(
             ConfigLoadFailureCategory.MALFORMED_JSON, snapshot

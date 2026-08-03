@@ -115,20 +115,27 @@ SPDX-License-Identifier: Apache-2.0
 
 ### Configuration versions and recovery
 
-DesktopTileLauncher reads at most 4 MiB of `config.json` for normal UTF-8 and
-JSON parsing. Production persists the explicit identity-only schema version 1:
-one Workspace, stable Workspace and Tab UUIDs, ID-based Tile membership, and the
-existing flat Tile and launcher settings. Legacy configuration without
-`schema_version` is version 0 and migrates transactionally through the registered
-pure v0-to-v1 step. Migration creates exactly one `Default Workspace`; the
-launcher title is preserved independently as `application.title`.
+DesktopTileLauncher reads at most 4 MiB of `config.json` for UTF-8 and JSON
+parsing and rejects duplicate JSON object members at any nesting depth.
+Production persists complete schema version 2: stable Workspace and Tab
+identities, URL Resources, per-Tab Placements and independent orders, and
+portable or device-specific settings represented as DeviceBindings. The
+complete validated graph remains authoritative even when the current flat UI
+does not expose every part of it.
+
+Legacy configuration without `schema_version` is version 0. Explicit version 1
+is the identity-only intermediate format. The registered pure consecutive steps
+migrate version 0 to version 1 and version 1 to version 2 transactionally.
+Migration creates exactly one `Default Workspace`; the launcher title is
+preserved independently as `application.title`. Each legacy Tile becomes one
+distinct URL Resource and Placement, preserving its effective appearance,
+launch behavior, Tab membership, and per-Tab order.
 
 An explicit `schema_version` of 0 is invalid. A malformed version value or any
-unsupported newer version, including the deferred full-graph version 2, receives
-fixed **Exit**-only handling before legacy construction, normalization, or
-saving. Invalid current version 1 and migration failures also use fixed
-Exit-only handling. These version and migration cases never offer Preserve and
-Reset.
+unsupported version newer than 2 receives fixed **Exit**-only handling before
+legacy construction, normalization, or saving. Invalid current version 2,
+invalid version 1 source state, and migration failures also use fixed Exit-only
+handling. These version and migration cases never offer Preserve and Reset.
 
 The existing recovery choices remain unchanged for the established corrupt or
 unreadable configuration categories. Startup offers exactly **Exit** or
@@ -142,17 +149,17 @@ configuration is installed atomically. A reset is not attempted when copying,
 verification, or the final source-change check fails. Verified recovery copies
 are never overwritten or deleted automatically.
 
-The Qt-free migration harness runs the pure deterministic v0-to-v1 step and is
-ready for future consecutive registered steps. It validates the source before
-preservation; a source-validation rejection creates no recovery artifact and
-performs no write. When at least one step will run, the harness preserves and
-independently verifies one exact recovery copy before the first step, validates
-every detached intermediate and target document, and writes deterministic
-UTF-8 JSON through a guarded atomic replacement. Candidate JSON preserves
-non-ASCII text, sorts keys, uses two-space indentation and LF line endings,
-rejects non-finite numbers, and has no trailing newline. The harness reverifies
-both the source and recovery copy immediately before replacement, then reloads
-and validates the installed candidate.
+The Qt-free migration harness runs the registered pure deterministic v0-to-v1
+and v1-to-v2 steps. It validates the source before preservation; a
+source-validation rejection creates no recovery artifact and performs no write.
+When at least one step will run, the harness preserves and independently verifies
+one exact recovery copy before the first step, validates every detached
+intermediate and target document, and writes deterministic UTF-8 JSON through a
+guarded atomic replacement. Candidate JSON preserves non-ASCII text, sorts keys,
+uses two-space indentation and LF line endings, rejects non-finite numbers, and
+has no trailing newline. The harness reverifies both the source and recovery copy
+immediately before replacement, then reloads and validates the installed
+candidate.
 
 After replacement, the harness must successfully reload the exact candidate
 bytes before treating the installed file as transaction-owned. Retention and
@@ -170,11 +177,32 @@ that cannot be completed or verified also fails closed. Published recovery
 copies and failed candidates are private, never overwritten, and never deleted
 automatically.
 
-A valid current version 1 file loads directly without a startup normalization
-write and never passes through repair-oriented legacy normalization. Workspace
-and Tab IDs are not regenerated while loading, saving, or restarting. Actual
-user mutations persist one complete strictly validated version 1 document
-through the shared atomic-write path.
+A valid current version 2 file loads directly without a startup normalization
+write and never passes through repair-oriented legacy normalization. Workspace,
+Tab, Resource, Placement, and DeviceBinding IDs are not regenerated while
+loading, saving, or restarting. Missing and reset configuration is installed as
+a complete validated version 2 document. First-run publication is exclusive: if another
+process creates `config.json` after the missing-file check, that file is retained and this
+startup fails safely instead of replacing it.
+
+Permitted flat-UI changes produce a detached candidate from the complete graph,
+are saved atomically, and replace the authoritative graph only after persistence
+succeeds. Add Tile appends a new `in_use` Placement to both Display and In Use
+Kanban order; Duplicate Tile
+inserts a distinct copied Resource and Placement after its source in both orders and copies
+all of the source Placement's launch bindings under fresh binding IDs;
+and URL import appends its batch in reviewed source order to both. A cross-Tab
+move uses the destination position produced by the current flat Tile order and
+appends to the matching destination Kanban queue. Delete Tab first discards each
+owned Placement and its Placement DeviceBindings, retaining referenced Resources
+as valid orphans, before removing the empty Tab.
+
+Resource sharing, presentation overrides, and other advanced graph state that
+the flat controls cannot represent losslessly remain read-only in those controls.
+Unsupported mutations are disabled or rejected rather than flattening the
+document. Unexposed Workspaces, archived or filtered state, independent orders,
+bindings, extensions, and entity identities remain preserved across permitted
+saves.
 
 Migration recovery is not journaled. A process interruption after an atomic
 candidate replacement but before post-write verification or rollback can leave

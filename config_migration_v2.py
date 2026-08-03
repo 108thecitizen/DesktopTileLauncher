@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Dormant, pure schema-version 1 to schema-version 2 transformation.
+"""Pure schema-version 1 to schema-version 2 transformation.
 
 This module constructs one complete URL-only schema-v2 candidate from an
 already detached strict schema-v1 logical graph.  It deliberately performs no
