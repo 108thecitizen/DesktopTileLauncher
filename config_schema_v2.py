@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Dormant, Qt-free schema-version 2 wire types and strict validation.
+"""Qt-free schema-version 2 wire types and strict validation.
 
 This module deliberately does not parse files, register schema support, allocate
 identities, migrate state, or import production startup and persistence code.
-The object-pairs callback is a dormant capability for a later parser boundary;
-``validate_v2`` accepts only an already-decoded mapping.
+The production parser uses the object-pairs callback before ``validate_v2``
+receives an already-decoded mapping.
 """
 
 from __future__ import annotations
@@ -197,8 +197,8 @@ def reject_duplicate_json_members(
 ) -> dict[str, object]:
     """Build one object or reject a duplicate without exposing its key or value.
 
-    This function is suitable as ``json.loads(..., object_pairs_hook=...)`` but
-    intentionally performs no decoding itself and is not wired into production.
+    This function is used as ``json.loads(..., object_pairs_hook=...)`` and
+    intentionally performs no decoding itself.
     """
 
     result: dict[str, object] = {}

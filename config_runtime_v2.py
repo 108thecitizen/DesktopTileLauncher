@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Dormant, Qt-free runtime projections for validated schema-version 2 state.
+"""Qt-free runtime projections for validated schema-version 2 state.
 
 This module resolves the complete persisted graph into immutable values needed
 by the existing URL launcher and metadata-refresh behavior.  It performs no
@@ -94,6 +94,7 @@ class WorkspaceProjection:
 
 WorkspaceProjectionResult: TypeAlias = WorkspaceProjection | RuntimeAdapterRejected
 MetadataRefreshResult: TypeAlias = v2.Root | RuntimeAdapterRejected
+CloneResult: TypeAlias = v2.Root | RuntimeAdapterRejected
 _JsonContainer: TypeAlias = list[v2.StrictJsonValue] | dict[str, v2.StrictJsonValue]
 
 
@@ -385,6 +386,18 @@ def project_workspace(
     )
 
 
+def clone_document(document: object) -> CloneResult:
+    """Return a detached copy of one complete validated schema-v2 graph."""
+
+    graph = _validated_graph(document)
+    if graph is None:
+        return RuntimeAdapterRejected("invalid_graph")
+    return cast(
+        v2.Root,
+        _clone_strict_json(cast(v2.StrictJsonValue, graph.root)),
+    )
+
+
 def apply_metadata_refresh(
     document: object,
     placement_id: str,
@@ -424,6 +437,7 @@ def apply_metadata_refresh(
 
 
 __all__ = [
+    "CloneResult",
     "LaunchSettingsProjection",
     "MetadataRefreshResult",
     "PlacementProjection",
@@ -434,5 +448,6 @@ __all__ = [
     "WorkspaceProjection",
     "WorkspaceProjectionResult",
     "apply_metadata_refresh",
+    "clone_document",
     "project_workspace",
 ]

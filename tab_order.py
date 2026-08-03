@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 TabIdFactory = Callable[[], str]
+_TAB_ID_ALLOCATION_ATTEMPTS = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +16,13 @@ class TabOrderState:
     tabs: list[str]
     tab_ids: dict[str, str]
     tab_order: list[str]
+
+
+class TabIdentityAllocationError(ValueError):
+    """A new runtime Tab ID could not be allocated safely."""
+
+    def __init__(self) -> None:
+        super().__init__("identity_allocation_failure")
 
 
 def new_tab_id() -> str:
@@ -32,11 +40,26 @@ def _canonical_tab_id(value: object) -> str | None:
         return None
 
 
+def _generated_tab_id(value: object) -> str | None:
+    candidate = _canonical_tab_id(value)
+    if candidate is None or UUID(candidate).version != 4:
+        return None
+    return candidate
+
+
 def _new_unique_tab_id(blocked_ids: set[str], id_factory: TabIdFactory) -> str:
-    while True:
-        candidate = _canonical_tab_id(id_factory())
+    for _ in range(_TAB_ID_ALLOCATION_ATTEMPTS):
+        allocator_failed = False
+        try:
+            candidate = _generated_tab_id(id_factory())
+        except Exception:
+            candidate = None
+            allocator_failed = True
+        if allocator_failed:
+            raise TabIdentityAllocationError
         if candidate is not None and candidate not in blocked_ids:
             return candidate
+    raise TabIdentityAllocationError
 
 
 def _reserved_saved_ids(raw_tab_ids: object, raw_tab_order: object) -> set[str]:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Dormant canonical serialization for complete schema-version 2 candidates."""
+"""Canonical serialization for complete schema-version 2 candidates."""
 
 from __future__ import annotations
 

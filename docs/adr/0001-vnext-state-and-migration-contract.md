@@ -9,16 +9,17 @@
 
 ## Context
 
-DesktopTileLauncher currently persists one unversioned JSON object represented by
-`LauncherConfig` in `tile_launcher.py`. The current file stores application and window
+At the start of this ADR, DesktopTileLauncher persisted one unversioned JSON object represented
+by `LauncherConfig` in `tile_launcher.py`. That historical file stored application and window
 settings, tiles, tab titles, hidden tab titles, stable tab UUIDs keyed by title, and a
-canonical list of tab UUIDs. A tile identifies its tab by mutable title. The current
-model has no first-class Workspace, Resource, Placement, DeviceBinding, or ImportBatch.
+canonical list of tab UUIDs. A tile identified its tab by mutable title. That model had no
+first-class Workspace, Resource, Placement, DeviceBinding, or ImportBatch. The activation
+amendment below supersedes this historical context for the current production format.
 
-`config_persistence.py` already writes a complete replacement through a sibling
-temporary file, flushes it, and uses `os.replace`. That protects a valid configuration
-from a failed write, but startup still parses JSON directly. Malformed JSON, unsupported
-versions, migration failures, backups, and rollback do not yet have a contract.
+At that time, `config_persistence.py` already wrote a complete replacement through a sibling
+temporary file, flushed it, and used `os.replace`. That protected a valid configuration from
+a failed write, but startup still parsed JSON directly. Malformed JSON, unsupported versions,
+migration failures, backups, and rollback did not yet have a contract.
 
 The Windows Content Triage milestone needs named workspaces, typed URL and image
 resources, per-tab placements, New/In Use/Archived workflow state, Display and Kanban
@@ -62,17 +63,19 @@ persisted schema-version numbers are distinct.
 10. Version 0 to version 1 migration always names the single created Workspace
     `Default Workspace`. The existing launcher title remains `application.title` only and
     is not reused as the Workspace name.
-11. Q5 implements only version 0 to version 1. A later focused slice will implement version
-    1 to version 2. Until then, explicit version 2 is unsupported newer and is never opened
-    or rewritten.
+11. Q5 implements only version 0 to version 1. The final integration slice registers the
+    version 1 to version 2 step and makes complete schema version 2 the current production
+    format. Explicit version 1 is migrated transactionally; valid version 2 is opened
+    directly without a normalization write.
 
 ## Schema version 2 URL-Tile contract
 
 ### Status and scope
 
-Issue #118 is documentation-only. Schema version 2 remains unsupported and unregistered.
-This is not Q6. The issue patch is limited to this ADR and `CHANGELOG.md`; checkpoints 0
-through 6 changed only this ADR.
+Issue #118 was documentation-only and left schema version 2 unsupported and unregistered.
+It was not Q6, and its checkpoints changed only this ADR and `CHANGELOG.md`. The later final
+integration slice described below activates the already accepted complete schema-v2 graph;
+that activation does not retroactively broaden issue #118.
 
 This section inherits these boundaries:
 
@@ -1624,8 +1627,9 @@ Implementation defects retain exactly these `PureEngineDefectCategory` values:
 `callback_exception`, `invalid_callback_result`, `invalid_step_output`, and
 `unexpected_target_version`. Callback exception text MUST be discarded. A registry step
 name MAY appear only as a fixed, validated internal registry event name; it MUST NOT contain
-or derive from source data, an entity ID, or a UUID input name. This ADR does not register or
-name the dormant v1-to-v2 step.
+or derive from source data, an entity ID, or a UUID input name. At the issue-#118 checkpoint,
+the ADR did not register or name the then-dormant v1-to-v2 step. The final integration slice
+registers the fixed internal name `v1_to_v2` without changing that privacy boundary.
 
 The transaction reuses exactly these `TransactionFailureCategory` values:
 
@@ -1747,9 +1751,9 @@ automatically deleted. Cleanup MUST remove only temporary or staging files prove
 owned by the writer. There is no kernel compare-and-swap guarantee; any ownership
 uncertainty fails closed.
 
-Once schema v2 is eventually supported and current, an already-valid schema-v2 document is
-validated as current state, MUST NOT be replayed through v1-to-v2, and MUST NOT receive a
-migration normalization write. This rule does not register or activate schema v2 now.
+Now that schema v2 is supported and current, an already-valid schema-v2 document is validated
+as current state, MUST NOT be replayed through v1-to-v2, and MUST NOT receive a migration
+normalization write.
 
 #### Interruption boundaries
 
@@ -1813,6 +1817,64 @@ or incomplete schema-v2 graph. The dependency order is:
 
 These slices assign no issue number, branch, milestone, release, or `Q6` name.
 
+#### Current flat-UI activation policy
+
+Schema-v2 activation does not make the current flat UI the serialization authority. The
+complete validated schema-v2 document remains the authoritative production state. Every
+permitted flat-UI persistence attempt constructs a candidate from a detached copy of that
+complete document, changes only the fields and memberships required by the operation below,
+validates and canonically serializes the complete candidate, persists it atomically, and
+replaces the authoritative live document only after persistence succeeds. It MUST NOT
+rebuild version 2 from a flat Tile list or round-trip version 2 through version 1.
+
+The current flat UI uses these operation-specific defaults for its legacy-compatible
+Resource/Placement subset:
+
+- **Add Tile** creates one distinct URL Resource and one Placement with
+  `workflow_status: in_use`. It appends the Placement ID to the destination Tab's
+  `display_order` and to `kanban_order.in_use`.
+- **Duplicate Tile** creates a distinct URL Resource and Placement carrying the duplicated
+  flat Tile values, with new globally unique entity IDs and `workflow_status: in_use`. It
+  inserts the new Placement immediately after the source in both `display_order` and
+  `kanban_order.in_use`. Every portable and device-specific launch binding is copied with a
+  new globally unique binding ID, the duplicate Placement as subject, and exact
+  applicability, settings, and Extensions values. The flat operation does not introduce
+  Resource sharing.
+- **Import URLs** creates one distinct URL Resource and Placement per accepted row. Every
+  Placement uses `workflow_status: in_use`; the batch appends in reviewed source order to
+  both the destination `display_order` and `kanban_order.in_use`.
+- **Move Tile to another Tab** preserves the Placement identity, Resource reference,
+  workflow status, presentation fields, Extensions, and every DeviceBinding. It removes the
+  Placement ID from the source Display order and matching Kanban queue, changes `tab_id`,
+  inserts it at the destination Display position produced by the current flat UI's ordered
+  Tile list, and appends it to the destination queue matching its unchanged workflow status.
+- **Delete Tab** first applies the defined Discard operation to every Placement owned by the
+  Tab: remove the Placement from its Display and matching Kanban memberships, remove every
+  DeviceBinding whose subject is that Placement, and retain the referenced Resource as a
+  permitted orphan. Only after the Tab is empty does the operation remove its ID from the
+  owning Workspace's `tab_order` and remove the Tab definition. The existing protection for
+  the last usable Tab remains in force.
+
+Add, duplicate, import, and cross-Tab move therefore supply both independent insertion
+positions required by the schema-v2 contract; none derives Kanban order from Display order.
+Within-Tab drag reorder continues to use filtered-slot replacement and changes only
+`display_order`.
+
+The flat UI is read-only for a mutation whose target or required ordering context uses
+Resource sharing, a non-null label or icon override, or other advanced graph state that the
+current controls cannot represent losslessly. Examples include Kanban view, non-default
+workflow/filter state, multiple-Workspace or multi-placement interaction, and device-specific
+editing. Archived Tabs and other unexposed definitions may remain editable only when the
+operation preserves them exactly. The application may project and launch supported values,
+but it MUST disable or reject the ambiguous mutation before constructing a candidate. It
+MUST NOT flatten, repair, delete, regenerate, or silently normalize the advanced state.
+
+Every permitted flat operation preserves all unmodified Workspaces, Tabs, Resources,
+Placements, DeviceBindings, Extensions values, lifecycle and filter state, independent
+orders, and entity IDs from the complete schema-v2 source. Definitions not exposed by the
+flat UI remain value-equivalent with every array order unchanged after canonical
+reserialization; object key order follows the required canonical sorting.
+
 ## Version envelope
 
 ### Version identification
@@ -1822,8 +1884,8 @@ These slices assign no issue number, branch, milestone, release, or `Q6` name.
 - Boolean, floating-point, string, negative, and otherwise malformed version values are
   invalid; they are not coerced.
 - The application migrates only through consecutive registered steps.
-- Q5 supports versions 0 through 1 and registers only the version 0 to version 1 step.
-  Explicit version 2 remains unsupported newer until the later version 1 to version 2 slice.
+- Production supports versions 0 through 2, treats version 2 as current, and registers the
+  consecutive version 0 to version 1 and version 1 to version 2 steps.
 - A document whose version is greater than the newest supported version is not opened or
   rewritten. The user receives an unsupported-newer-version recovery message.
 - A document whose version is lower than the oldest supported input version is preserved
@@ -1925,10 +1987,10 @@ Root `extensions` is empty or exactly:
 
 Retained legacy values must be recursively finite strict JSON. For migration and native
 missing/reset construction, the Workspace name is exactly `Default Workspace`. A valid
-current version 1 document may use another non-empty Workspace name and round-trips it
-unchanged. The launcher title remains independent: a legacy launcher titled `My Launcher`
-retains `application.title: "My Launcher"`, while its migrated Workspace is still named
-`Default Workspace`.
+explicit version 1 migration source may use another non-empty Workspace name and carries it
+unchanged into version 2. The launcher title remains independent: a legacy launcher titled
+`My Launcher` retains `application.title: "My Launcher"`, while its migrated Workspace is
+still named `Default Workspace`.
 
 ### Version 2 full-graph root state
 
@@ -2435,8 +2497,9 @@ independent orders.
   recoverable. It may delete only an unreferenced managed asset beneath the validated DTL
   managed root.
 - External originals are never cleanup targets.
-- Deleting or archiving a Tab is not equivalent to discarding all of its Placements. Tab
-  archive/delete/trash semantics require their own later decision.
+- Archiving a Tab is not equivalent to discarding all of its Placements and remains a later
+  decision. The current flat-UI activation policy above separately defines active Tab deletion
+  as an explicit discard of every owned Placement before the empty Tab is removed.
 
 ## Legacy version 0 to identity version 1 migration
 
@@ -2514,21 +2577,22 @@ exactly `Default Workspace`, its ID is the `default_workspace_id` target, and
 `application.title` equals the preserved legacy launcher title. Custom, blank/default,
 missing, and non-ASCII title cases demonstrate that the two names are independent.
 
-Missing configuration bypasses migration and constructs native version 1 directly with
+Q5 missing-configuration handling constructs native version 1 with
 `application.title: "My Launcher"`, one `Default Workspace`, one visible `Main` Tab, and the
 existing ChatGPT, Gmail, and Notion Tiles assigned to Main by `tab_id`. It uses distinct,
-collision-checked Workspace and Tab UUIDv4 values from an injectable runtime allocator,
-validates the complete candidate, and atomically persists it before returning usable state.
-Q3 Preserve and Reset installs the same native version 1 only after preserving and verifying
-the corrupt source. Native IDs are never regenerated while loading, normalizing, saving, or
-restarting.
+collision-checked Workspace and Tab UUIDv4 values from an injectable runtime allocator. On
+schema-v2 activation, missing and reset configuration passes that validated native state
+through the same pure version 1 to version 2 construction before the complete version 2
+candidate is validated and atomically persisted. Q3 Preserve and Reset does so only after
+preserving and verifying the corrupt source. Native IDs are never regenerated while loading,
+migrating, saving, or restarting. Missing-file publication MUST be exclusive and MUST NOT
+replace a configuration created by another process after the initial absence check.
 
 ## Version 1 to version 2 migration
 
-A later focused slice will implement version 1 to version 2. It must preserve the version 1
-Workspace, Tab, Tile, application, setting, and extension state while producing the accepted
-full graph. The accepted mapping, previously described as direct version 0 to version 1,
-remains:
+The activation slice implements version 1 to version 2. It preserves the version 1 Workspace,
+Tab, Tile, application, setting, and extension state while producing the accepted full graph.
+The accepted mapping, previously described as direct version 0 to version 1, remains:
 
 | Version 1 value | Version 2 value |
 |---|---|
@@ -2547,12 +2611,12 @@ remains:
 | existing Tiles | Placement `workflow_status: in_use` |
 | existing Tabs | `view_mode: display`, Display filter `new` + `in_use` |
 
-The later step does not deduplicate Resources, merge Tabs, normalize user-facing labels, drop
-Tiles, or change launch behavior. Each Tile becomes a distinct Resource, so Resource defaults
-and null Placement overrides preserve appearance without introducing sharing between formerly
-independent Tiles. Existing Tiles initialize Display order and the In Use Kanban column from
-the same preserved per-Tab order; New and Archived Kanban arrays start empty. Every current
-Tab, hidden state, stable order, Tile field, launch setting, window value, and permitted
+The registered step does not deduplicate Resources, merge Tabs, normalize user-facing labels,
+drop Tiles, or change launch behavior. Each Tile becomes a distinct Resource, so Resource
+defaults and null Placement overrides preserve appearance without introducing sharing between
+formerly independent Tiles. Existing Tiles initialize Display order and the In Use Kanban
+column from the same preserved per-Tab order; New and Archived Kanban arrays start empty. Every
+current Tab, hidden state, stable order, Tile field, launch setting, window value, and permitted
 extension remains accounted for. The complete version 2 candidate must pass all version 2
 invariants before any write.
 
@@ -2566,7 +2630,7 @@ safety and failure behavior are authoritative for v1-to-v2 and reuse the existin
 path.
 
 One bounded raw load precedes parsing and classification. Raw parse failures, including
-duplicate members once the documented parser boundary is implemented, retain the Q3
+duplicate members rejected at the parser boundary, retain the Q3
 recovery route. Malformed and unsupported version values use the fixed Q4 Exit-only
 categories and are not rewritten.
 
@@ -2590,9 +2654,10 @@ write.
 
 Q3 implements corrupt-input preservation and user recovery. Q4 implements the version
 registry, pure step runner, validation hooks, deterministic tests, and rollback plumbing.
-Q5 implements the version 0 to version 1 Workspace/Tab identity slice. A later focused slice
-implements version 1 to version 2 before subsequent slices add the accepted full-graph
-Resource/Placement, workflow, DeviceBinding, and ImportBatch runtime behavior.
+Q5 implements the version 0 to version 1 Workspace/Tab identity slice. The final integration
+slice registers version 1 to version 2, activates the complete Resource/Placement and
+DeviceBinding graph, and applies the bounded flat-UI policy above. Kanban, ImportBatch, and
+other advanced product behavior remain later slices.
 
 ## Validation invariants
 
@@ -2641,9 +2706,10 @@ Anything else enters explicit recovery without configuration mutation or automat
 - Q5: create the default Workspace named exactly `Default Workspace`, preserve the existing
   launcher title in `application.title`, and introduce stable Workspace/Tab identity
   migration while preserving existing valid Tab IDs and behavior as schema version 1.
-- Later schema-v2 implementation follows the dormant-types, dormant-transformer, runtime
-  adapter, and final integration/activation dependency order documented above. No slice may
-  emit an incomplete schema-v2 graph.
+- Schema-v2 implementation follows the types, transformer, runtime-adapter, and final
+  integration/activation dependency order documented above. The final slice activates only
+  the complete graph and the bounded flat-UI mutation policy; no slice may emit an incomplete
+  schema-v2 graph.
 - Later image/import, Kanban UI, Workspace-selection, multi-placement, and device-platform
   slices remain separate product or future-schema work.
 

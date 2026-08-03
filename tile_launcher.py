@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -91,9 +90,22 @@ from config_migration import (
     startup_failure_route,
     startup_notice_message,
 )
-from config_persistence import atomic_write_bytes
+from config_persistence import atomic_create_bytes, atomic_write_bytes
+from config_runtime_state_v2 import (
+    FlatStateRejected,
+    FlatTabState,
+    FlatTileIdentity,
+    FlatTileState,
+    FlatWorkspaceState,
+    FlatWorkspaceUpdate,
+    NativeV2ConstructionError,
+    build_native_v2,
+    project_flat_workspace,
+    reserved_entity_ids,
+    synchronize_flat_workspace,
+)
+from config_runtime_v2 import clone_document
 from config_recovery import (
-    MAX_CONFIG_BYTES,
     ConfigLoadFailureCategory,
     ConfigMissing,
     ConfigRecoveryRequired,
@@ -111,11 +123,12 @@ from config_schema import (
     DEFAULT_WORKSPACE_NAME,
     JsonObject,
     JsonValue,
-    NativeV1ConstructionError,
     Uuid4Allocator,
-    build_native_v1,
     validate_v1,
 )
+from config_migration_v2 import migrate_v1_to_v2
+from config_schema_v2 import Root as V2Root
+from config_serialization_v2 import SerializedV2Document, serialize_v2
 from debug_scaffold import (
     record_breadcrumb,
     sanitize_launch_command,
@@ -139,6 +152,7 @@ from tile_metadata_refresh import (
 from tile_editor_dialog import TileEditorDialog
 from url_import_dialog import ImportDestination, UrlImportDialog
 from tab_order import (
+    TabIdentityAllocationError,
     TabOrderState,
     add_tab as add_tab_to_order,
     delete_tab as delete_tab_from_order,
@@ -322,6 +336,10 @@ class Tile:
     chrome_profile: Optional[str] = None  # e.g. "Default", "Profile 1"
     open_target: Literal["tab", "window"] = "tab"
     tab_id: str | None = None
+    placement_id: str | None = None
+    resource_id: str | None = None
+    launch_binding_id: str | None = None
+    duplicate_source_placement_id: str | None = None
 
 
 NativeConfigurationFailureCategory: TypeAlias = Literal[
@@ -372,9 +390,21 @@ def _runtime_save_failure_category(
 ) -> RuntimeSaveFailureCategory:
     if isinstance(error, OSError):
         return "persistence_failure"
-    if error.args == ("schema_v1_size_limit_exceeded",):
+    if error.args == ("schema_v2_size_limit_exceeded",):
         return "size_limit_exceeded"
     return "validation_failure"
+
+
+@dataclass(frozen=True, slots=True)
+class _V2CommitPlan:
+    document: V2Root = field(repr=False)
+    tiles: tuple[Tile, ...] = field(repr=False)
+    tile_identities: tuple[FlatTileIdentity, ...] = field(repr=False)
+    editable: bool
+    application_extensions: JsonObject = field(repr=False)
+    workspace_extensions: JsonObject = field(repr=False)
+    tab_extensions: dict[str, JsonObject] = field(repr=False)
+    extensions: JsonObject = field(repr=False)
 
 
 @dataclass
@@ -397,6 +427,8 @@ class LauncherConfig:
     workspace_extensions: JsonObject = field(default_factory=dict)
     tab_extensions: dict[str, JsonObject] = field(default_factory=dict)
     extensions: JsonObject = field(default_factory=dict)
+    _v2_document: V2Root | None = field(default=None, repr=False, compare=False)
+    _v2_editable: bool = field(default=False, repr=False, compare=False)
     _identity_ready: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -405,7 +437,7 @@ class LauncherConfig:
 
     @classmethod
     def from_legacy_mapping(cls, data: dict[str, object]) -> "LauncherConfig":
-        """Construct the current unversioned model with its existing behavior."""
+        """Construct the legacy unversioned model with compatibility behavior."""
         legacy = cast(dict[str, Any], data)
         tiles = [Tile(**tile) for tile in legacy.get("tiles", [])]
         raw_tabs = legacy.get("tabs") or []
@@ -501,13 +533,76 @@ class LauncherConfig:
         )
 
     @classmethod
+    def from_v2_mapping(cls, data: Mapping[str, object]) -> "LauncherConfig":
+        """Project one complete v2 graph while retaining it as authority."""
+
+        cloned = clone_document(data)
+        if not isinstance(cloned, dict):
+            raise ValueError("invalid_schema_v2_runtime_state")
+        projected = project_flat_workspace(cloned)
+        if isinstance(projected, FlatStateRejected):
+            raise ValueError("invalid_schema_v2_runtime_state")
+        title_by_id = {tab.id: tab.name for tab in projected.tabs}
+        tabs = [title_by_id[tab_id] for tab_id in projected.tab_order]
+        tab_ids = {title_by_id[tab_id]: tab_id for tab_id in projected.tab_order}
+        hidden_tabs = [tab.name for tab in projected.tabs if tab.hidden]
+        tiles = [
+            Tile(
+                name=tile.name,
+                url=tile.url,
+                tab=title_by_id[tile.tab_id],
+                icon=tile.icon,
+                bg=tile.background_color,
+                browser=tile.browser,
+                chrome_profile=tile.chrome_profile,
+                open_target=tile.open_target,
+                tab_id=tile.tab_id,
+                placement_id=tile.placement_id,
+                resource_id=tile.resource_id,
+                launch_binding_id=tile.launch_binding_id,
+            )
+            for tile in projected.tiles
+        ]
+        root = cast(V2Root, cloned)
+        workspace = next(
+            item for item in root["workspaces"] if item["id"] == projected.workspace_id
+        )
+        tab_definitions = {item["id"]: item for item in root["tabs"]}
+        return cls(
+            title=projected.title,
+            columns=projected.columns,
+            tiles=tiles,
+            tabs=tabs,
+            hidden_tabs=hidden_tabs,
+            tab_ids=tab_ids,
+            tab_order=list(projected.tab_order),
+            auto_fit=projected.auto_fit,
+            window_x=projected.window_x,
+            window_y=projected.window_y,
+            window_w=projected.window_w,
+            window_h=projected.window_h,
+            workspace_id=projected.workspace_id,
+            workspace_name=projected.workspace_name,
+            application_extensions=cast(JsonObject, root["application"]["extensions"]),
+            workspace_extensions=cast(JsonObject, workspace["extensions"]),
+            tab_extensions={
+                tab_id: cast(JsonObject, tab_definitions[tab_id]["extensions"])
+                for tab_id in projected.tab_order
+            },
+            extensions=cast(JsonObject, root["extensions"]),
+            _v2_document=root,
+            _v2_editable=projected.editable,
+            _identity_ready=True,
+        )
+
+    @classmethod
     def first_run(
         cls,
         id_factory: Uuid4Allocator = uuid4,
     ) -> "LauncherConfig":
-        """Return one validated native-v1 friendly configuration."""
+        """Return one complete native-v2 configuration."""
 
-        return cls.from_v1_mapping(build_native_v1(id_factory))
+        return cls.from_v2_mapping(build_native_v2(id_factory))
 
     @staticmethod
     def load(
@@ -527,9 +622,9 @@ class LauncherConfig:
             failure_category: NativeConfigurationFailureCategory | None = None
             try:
                 cfg = LauncherConfig.first_run()
-                cfg.save()
-            except NativeV1ConstructionError:
-                failure_category = "identity_allocation_failure"
+                cfg._save_if_missing()
+            except NativeV2ConstructionError as error:
+                failure_category = error.category
             except ValueError:
                 failure_category = "validation_failure"
             except OSError:
@@ -549,29 +644,16 @@ class LauncherConfig:
                 on_existing_legacy(cfg, result.raw)
             return cfg
         if isinstance(result, (VersionedCurrent, MigrationCommitted)):
-            return LauncherConfig.from_v1_mapping(result.document)
+            return LauncherConfig.from_v2_mapping(result.document)
         if startup_failure_route(result) is StartupFailureRoute.EXIT_ONLY:
             raise ConfigurationMigrationError.from_outcome(result)
         raise ConfigurationMigrationError.unexpected_success()
 
     def serialize(self) -> str:
-        """Serialize one complete, strictly validated schema-version 1 document."""
+        """Serialize one complete, strictly validated schema-version 2 document."""
 
-        document = self.to_v1_mapping()
-        serialized: str | None = None
-        try:
-            serialized = json.dumps(
-                document,
-                ensure_ascii=False,
-                sort_keys=True,
-                indent=2,
-                allow_nan=False,
-            )
-        except (TypeError, ValueError, OverflowError, UnicodeError):
-            serialized = None
-        if serialized is None:
-            raise ValueError("invalid_schema_v1_runtime_state")
-        return serialized
+        update = self._prepare_v2_update()
+        return self._payload_for_update(update).decode("utf-8")
 
     def to_v1_mapping(self) -> JsonObject:
         """Return current state as v1 without repairing or regenerating identity."""
@@ -665,21 +747,173 @@ class LauncherConfig:
             raise ValueError("invalid_schema_v1_runtime_state")
         return document
 
+    def _flat_v2_state(self) -> FlatWorkspaceState:
+        title_by_id = {tab_id: title for title, tab_id in self.tab_ids.items()}
+        if set(title_by_id) != set(self.tab_order):
+            raise ValueError("invalid_schema_v2_runtime_state")
+        return FlatWorkspaceState(
+            title=self.title,
+            workspace_id=self.workspace_id,
+            workspace_name=self.workspace_name,
+            tabs=tuple(
+                FlatTabState(
+                    tab_id,
+                    title_by_id[tab_id],
+                    title_by_id[tab_id] in self.hidden_tabs,
+                )
+                for tab_id in self.tab_order
+            ),
+            tab_order=tuple(self.tab_order),
+            tiles=tuple(
+                FlatTileState(
+                    placement_id=tile.placement_id,
+                    resource_id=tile.resource_id,
+                    launch_binding_id=tile.launch_binding_id,
+                    name=tile.name,
+                    url=tile.url,
+                    tab_id="" if tile.tab_id is None else tile.tab_id,
+                    icon=tile.icon,
+                    background_color=tile.bg,
+                    browser=tile.browser,
+                    chrome_profile=tile.chrome_profile,
+                    open_target=tile.open_target,
+                    duplicate_source_placement_id=(tile.duplicate_source_placement_id),
+                )
+                for tile in self.tiles
+            ),
+            columns=self.columns,
+            auto_fit=self.auto_fit,
+            window_x=self.window_x,
+            window_y=self.window_y,
+            window_w=self.window_w,
+            window_h=self.window_h,
+            editable=self._v2_editable,
+        )
+
+    def _initial_v2_update(self) -> FlatWorkspaceUpdate:
+        candidate = migrate_v1_to_v2(self.to_v1_mapping())
+        if candidate is None:
+            raise ValueError("invalid_schema_v2_runtime_state")
+        projected = project_flat_workspace(candidate)
+        if isinstance(projected, FlatStateRejected) or not projected.editable:
+            raise ValueError("invalid_schema_v2_runtime_state")
+        identities_by_tab: dict[str, list[FlatTileIdentity]] = {
+            tab_id: [] for tab_id in projected.tab_order
+        }
+        for tile in projected.tiles:
+            if (
+                tile.placement_id is None
+                or tile.resource_id is None
+                or tile.launch_binding_id is None
+            ):
+                raise ValueError("invalid_schema_v2_runtime_state")
+            identities_by_tab[tile.tab_id].append(
+                FlatTileIdentity(
+                    tile.placement_id,
+                    tile.resource_id,
+                    tile.launch_binding_id,
+                )
+            )
+        identities: list[FlatTileIdentity] = []
+        for tile in self.tiles:
+            if tile.tab_id is None or not identities_by_tab.get(tile.tab_id):
+                raise ValueError("invalid_schema_v2_runtime_state")
+            identities.append(identities_by_tab[tile.tab_id].pop(0))
+        if any(identities_by_tab.values()):
+            raise ValueError("invalid_schema_v2_runtime_state")
+        return FlatWorkspaceUpdate(candidate, tuple(identities))
+
+    def _prepare_v2_update(self) -> FlatWorkspaceUpdate:
+        if self._v2_document is None:
+            return self._initial_v2_update()
+        result = synchronize_flat_workspace(
+            self._v2_document,
+            self._flat_v2_state(),
+        )
+        if isinstance(result, FlatStateRejected):
+            if result.category == "identity_allocation_failure":
+                raise ValueError("schema_v2_identity_allocation_failure")
+            if result.category == "unsupported_graph":
+                raise ValueError("unsupported_schema_v2_runtime_state")
+            raise ValueError("invalid_schema_v2_runtime_state")
+        return result
+
+    @staticmethod
+    def _payload_for_update(update: FlatWorkspaceUpdate) -> bytes:
+        result = serialize_v2(update.document)
+        if not isinstance(result, SerializedV2Document):
+            if result.category.value == "candidate_size_limit_exceeded":
+                raise ValueError("schema_v2_size_limit_exceeded")
+            raise ValueError("invalid_schema_v2_runtime_state")
+        return result.data
+
+    def _plan_v2_commit(self, update: FlatWorkspaceUpdate) -> _V2CommitPlan:
+        if len(update.tile_identities) != len(self.tiles):
+            raise ValueError("invalid_schema_v2_runtime_state")
+        projected = project_flat_workspace(update.document)
+        if (
+            isinstance(projected, FlatStateRejected)
+            or projected.workspace_id != self.workspace_id
+            or projected.tab_order != tuple(self.tab_order)
+        ):
+            raise ValueError("invalid_schema_v2_runtime_state")
+        workspace = next(
+            (
+                item
+                for item in update.document["workspaces"]
+                if item["id"] == self.workspace_id
+            ),
+            None,
+        )
+        tabs = {item["id"]: item for item in update.document["tabs"]}
+        if workspace is None or any(tab_id not in tabs for tab_id in self.tab_order):
+            raise ValueError("invalid_schema_v2_runtime_state")
+        return _V2CommitPlan(
+            document=update.document,
+            tiles=tuple(self.tiles),
+            tile_identities=update.tile_identities,
+            editable=projected.editable,
+            application_extensions=cast(
+                JsonObject,
+                update.document["application"]["extensions"],
+            ),
+            workspace_extensions=cast(JsonObject, workspace["extensions"]),
+            tab_extensions={
+                tab_id: cast(JsonObject, tabs[tab_id]["extensions"])
+                for tab_id in self.tab_order
+            },
+            extensions=cast(JsonObject, update.document["extensions"]),
+        )
+
+    def _commit_v2_update(self, plan: _V2CommitPlan) -> None:
+        for tile, identity in zip(plan.tiles, plan.tile_identities):
+            tile.placement_id = identity.placement_id
+            tile.resource_id = identity.resource_id
+            tile.launch_binding_id = identity.launch_binding_id
+            tile.duplicate_source_placement_id = None
+        self._v2_document = plan.document
+        self._v2_editable = plan.editable
+        self.application_extensions = plan.application_extensions
+        self.workspace_extensions = plan.workspace_extensions
+        self.tab_extensions = plan.tab_extensions
+        self.extensions = plan.extensions
+
     def save(self) -> None:
-        payload = self._serialized_payload()
+        update = self._prepare_v2_update()
+        plan = self._plan_v2_commit(update)
+        payload = self._payload_for_update(update)
         atomic_write_bytes(CFG_PATH, payload)
+        self._commit_v2_update(plan)
+
+    def _save_if_missing(self) -> None:
+        update = self._prepare_v2_update()
+        plan = self._plan_v2_commit(update)
+        payload = self._payload_for_update(update)
+        atomic_create_bytes(CFG_PATH, payload)
+        self._commit_v2_update(plan)
 
     def _serialized_payload(self) -> bytes:
-        payload: bytes | None = None
-        try:
-            payload = self.serialize().encode("utf-8")
-        except UnicodeError:
-            payload = None
-        if payload is None:
-            raise ValueError("invalid_schema_v1_runtime_state")
-        if len(payload) > MAX_CONFIG_BYTES:
-            raise ValueError("schema_v1_size_limit_exceeded")
-        return payload
+        return self._payload_for_update(self._prepare_v2_update())
 
 
 @dataclass(frozen=True, slots=True)
@@ -690,9 +924,38 @@ class _RuntimeChangeSnapshot:
 
 
 def _runtime_change_snapshot(config: LauncherConfig) -> _RuntimeChangeSnapshot:
+    saved_tiles = [replace(tile) for tile in config.tiles]
+    saved_document = _detached_v2_document(config._v2_document)
+    saved_state = replace(
+        config,
+        tiles=saved_tiles,
+        tabs=list(config.tabs),
+        hidden_tabs=list(config.hidden_tabs),
+        tab_ids=dict(config.tab_ids),
+        tab_order=list(config.tab_order),
+        tab_extensions=dict(config.tab_extensions),
+        _v2_document=saved_document,
+    )
+    if saved_document is not None:
+        workspace = next(
+            item
+            for item in saved_document["workspaces"]
+            if item["id"] == saved_state.workspace_id
+        )
+        tabs = {item["id"]: item for item in saved_document["tabs"]}
+        saved_state.application_extensions = cast(
+            JsonObject,
+            saved_document["application"]["extensions"],
+        )
+        saved_state.workspace_extensions = cast(JsonObject, workspace["extensions"])
+        saved_state.tab_extensions = {
+            tab_id: cast(JsonObject, tabs[tab_id]["extensions"])
+            for tab_id in saved_state.tab_order
+        }
+        saved_state.extensions = cast(JsonObject, saved_document["extensions"])
     return _RuntimeChangeSnapshot(
         live=config,
-        state=deepcopy(config),
+        state=saved_state,
         tiles=tuple(config.tiles),
     )
 
@@ -707,6 +970,10 @@ def _restore_tile(tile: Tile, saved: Tile) -> None:
     tile.chrome_profile = saved.chrome_profile
     tile.open_target = saved.open_target
     tile.tab_id = saved.tab_id
+    tile.placement_id = saved.placement_id
+    tile.resource_id = saved.resource_id
+    tile.launch_binding_id = saved.launch_binding_id
+    tile.duplicate_source_placement_id = saved.duplicate_source_placement_id
 
 
 def _restore_runtime_change(snapshot: _RuntimeChangeSnapshot) -> LauncherConfig:
@@ -736,6 +1003,8 @@ def _restore_runtime_change(snapshot: _RuntimeChangeSnapshot) -> LauncherConfig:
     live.workspace_extensions = state.workspace_extensions
     live.tab_extensions = state.tab_extensions
     live.extensions = state.extensions
+    live._v2_document = state._v2_document
+    live._v2_editable = state._v2_editable
     live._identity_ready = state._identity_ready
     return live
 
@@ -748,6 +1017,8 @@ def _persist_close_geometry(
     width: int,
     height: int,
 ) -> bool:
+    if config._v2_document is not None and not config._v2_editable:
+        return True
     previous_geometry = (
         config.window_x,
         config.window_y,
@@ -793,13 +1064,25 @@ def _guarded_existing_legacy_save(
     config: LauncherConfig,
     loaded: RawConfigLoaded,
 ) -> None:
+    update = config._prepare_v2_update()
+    plan = config._plan_v2_commit(update)
     result = guarded_legacy_normalization_save(
         CFG_PATH,
         loaded,
-        config.serialize(),
+        config._payload_for_update(update).decode("utf-8"),
     )
     if isinstance(result, LegacyNormalizationSaveFailed):
         raise ConfigurationMigrationError.from_outcome(result)
+    config._commit_v2_update(plan)
+
+
+def _detached_v2_document(document: V2Root | None) -> V2Root | None:
+    if document is None:
+        return None
+    cloned = clone_document(document)
+    if not isinstance(cloned, dict):
+        raise ValueError("invalid_schema_v2_runtime_state")
+    return cast(V2Root, cloned)
 
 
 def _tab_order_state(cfg: LauncherConfig) -> TabOrderState:
@@ -936,10 +1219,11 @@ def _config_with_imported_tiles(
         hidden_tabs=list(cfg.hidden_tabs),
         tab_ids=dict(cfg.tab_ids),
         tab_order=list(cfg.tab_order),
-        application_extensions=deepcopy(cfg.application_extensions),
-        workspace_extensions=deepcopy(cfg.workspace_extensions),
-        tab_extensions=deepcopy(cfg.tab_extensions),
-        extensions=deepcopy(cfg.extensions),
+        application_extensions=dict(cfg.application_extensions),
+        workspace_extensions=dict(cfg.workspace_extensions),
+        tab_extensions=dict(cfg.tab_extensions),
+        extensions=dict(cfg.extensions),
+        _v2_document=_detached_v2_document(cfg._v2_document),
     )
 
 
@@ -1790,6 +2074,9 @@ class Main(QMainWindow):
     def _selection_active(self) -> bool:
         return self._selection_tab_id is not None
 
+    def _mutations_enabled(self) -> bool:
+        return self.cfg._v2_document is None or self.cfg._v2_editable
+
     def _tab_id_at(self, index: int) -> str | None:
         if index < 0:
             return None
@@ -1811,7 +2098,11 @@ class Main(QMainWindow):
         )
 
     def enter_selection_mode(self) -> None:
-        if self._selection_active() or self._active_refresh is not None:
+        if (
+            not Main._mutations_enabled(self)
+            or self._selection_active()
+            or self._active_refresh is not None
+        ):
             return
         tab_name = self.current_tab()
         tab_id = self._tab_id_at(self.tabs_widget.currentIndex())
@@ -1929,6 +2220,7 @@ class Main(QMainWindow):
     def refresh_selected_metadata(self) -> None:
         if (
             self._closing
+            or not Main._mutations_enabled(self)
             or not self._selection_active()
             or self._active_refresh is not None
             or self._metadata_refresh_pool.activeThreadCount() > 0
@@ -2085,10 +2377,11 @@ class Main(QMainWindow):
                 hidden_tabs=list(self.cfg.hidden_tabs),
                 tab_ids=dict(self.cfg.tab_ids),
                 tab_order=list(self.cfg.tab_order),
-                application_extensions=deepcopy(self.cfg.application_extensions),
-                workspace_extensions=deepcopy(self.cfg.workspace_extensions),
-                tab_extensions=deepcopy(self.cfg.tab_extensions),
-                extensions=deepcopy(self.cfg.extensions),
+                application_extensions=dict(self.cfg.application_extensions),
+                workspace_extensions=dict(self.cfg.workspace_extensions),
+                tab_extensions=dict(self.cfg.tab_extensions),
+                extensions=dict(self.cfg.extensions),
+                _v2_document=_detached_v2_document(self.cfg._v2_document),
             ),
             tiles_by_identity,
         )
@@ -2309,6 +2602,7 @@ class Main(QMainWindow):
     def _update_selection_controls(self) -> None:
         selecting = self._selection_active()
         busy = self._active_refresh is not None
+        mutable = Main._mutations_enabled(self)
         selected_count = len(self._selected_tokens)
         total_count = len(self._selection_tiles)
 
@@ -2317,13 +2611,15 @@ class Main(QMainWindow):
         for action in self._selection_toolbar_actions:
             action.setVisible(selecting)
 
-        self.add_action.setEnabled(not selecting and not busy)
-        self.import_action.setEnabled(not selecting and not busy)
+        self.add_action.setEnabled(mutable and not selecting and not busy)
+        self.import_action.setEnabled(mutable and not selecting and not busy)
         active_tab_id = self.cfg.tab_ids[self.current_tab()]
         active_tab_has_tiles = any(
             tile.tab_id == active_tab_id for tile in self.cfg.tiles
         )
-        self.select_tiles_action.setEnabled(not busy and active_tab_has_tiles)
+        self.select_tiles_action.setEnabled(
+            mutable and not busy and active_tab_has_tiles
+        )
         self.selection_count_label.setText(
             f"Refreshing {selected_count}…" if busy else f"{selected_count} selected"
         )
@@ -2339,10 +2635,10 @@ class Main(QMainWindow):
         self.done_selection_action.setEnabled(selecting and not busy)
 
         for action in self._tab_mutation_actions:
-            action.setEnabled(not selecting and not busy)
+            action.setEnabled(mutable and not selecting and not busy)
         self._update_toggle_tab_action()
-        self.auto_fit_action.setEnabled(not selecting and not busy)
-        self.tabs_widget.tabBar().setMovable(not selecting and not busy)
+        self.auto_fit_action.setEnabled(mutable and not selecting and not busy)
+        self.tabs_widget.tabBar().setMovable(mutable and not selecting and not busy)
         self.tabs_widget.setEnabled(not busy)
 
     def _save_runtime_change(
@@ -2381,7 +2677,11 @@ class Main(QMainWindow):
         return False
 
     def _on_tab_moved(self, from_index: int, to_index: int) -> None:
-        if self._selection_active() or self._active_refresh is not None:
+        if (
+            not Main._mutations_enabled(self)
+            or self._selection_active()
+            or self._active_refresh is not None
+        ):
             return
         tab_bar = self.tabs_widget.tabBar()
         visible_ids_after = [tab_bar.tabData(index) for index in range(tab_bar.count())]
@@ -2431,11 +2731,15 @@ class Main(QMainWindow):
         )
         visible = self._visible_tabs()
         allow_hide = not hidden and len(visible) > 1
-        self.toggle_tab_action.setEnabled(hidden or allow_hide)
+        self.toggle_tab_action.setEnabled(
+            Main._mutations_enabled(self) and (hidden or allow_hide)
+        )
         if self._selection_active() or self._active_refresh is not None:
             self.toggle_tab_action.setEnabled(False)
 
     def _toggle_auto_fit(self, checked: bool) -> None:
+        if not Main._mutations_enabled(self):
+            return
         previous = _runtime_change_snapshot(self.cfg)
         restore_tab = self.current_tab()
         previous_auto_fit = self.cfg.auto_fit
@@ -3002,7 +3306,11 @@ class Main(QMainWindow):
             )
 
     def move_tile(self, tab: str, from_idx: int, to_idx: int) -> None:
-        if self._selection_active() or self._active_refresh is not None:
+        if (
+            not Main._mutations_enabled(self)
+            or self._selection_active()
+            or self._active_refresh is not None
+        ):
             return
         if from_idx == to_idx:
             return
@@ -3023,6 +3331,8 @@ class Main(QMainWindow):
         self._populate_tab(tab)
 
     def add_tile(self, default_tab: str | None = None) -> None:
+        if not Main._mutations_enabled(self):
+            return
         dlg = TileEditorDialog(
             tabs=self.cfg.tabs,
             browsers=available_browsers(),
@@ -3066,6 +3376,8 @@ class Main(QMainWindow):
             record_breadcrumb("tile_add")
 
     def import_urls(self, default_tab: str | None = None) -> None:
+        if not Main._mutations_enabled(self):
+            return
         previous_visible_tab = self.current_tab()
         destinations = tuple(
             ImportDestination(
@@ -3141,6 +3453,8 @@ class Main(QMainWindow):
             return
 
     def edit_tile(self, tile: Tile) -> None:
+        if not Main._mutations_enabled(self):
+            return
         dlg = TileEditorDialog(
             tabs=self.cfg.tabs,
             browsers=available_browsers(),
@@ -3172,9 +3486,17 @@ class Main(QMainWindow):
             self._set_current_tab_by_name(tile.tab)
 
     def duplicate_tile(self, tile: Tile) -> None:
+        if not Main._mutations_enabled(self):
+            return
         previous = _runtime_change_snapshot(self.cfg)
         restore_tab = self.current_tab()
-        new_tile = replace(tile)
+        new_tile = replace(
+            tile,
+            placement_id=None,
+            resource_id=None,
+            launch_binding_id=None,
+            duplicate_source_placement_id=tile.placement_id,
+        )
         idx = self.cfg.tiles.index(tile)
         self.cfg.tiles.insert(idx + 1, new_tile)
         if not Main._save_runtime_change(
@@ -3188,6 +3510,8 @@ class Main(QMainWindow):
         self._set_current_tab_by_name(tile.tab)
 
     def remove_tile(self, tile: Tile) -> None:
+        if not Main._mutations_enabled(self):
+            return
         ok = QMessageBox.warning(
             self,
             "Remove tile?",
@@ -3209,6 +3533,8 @@ class Main(QMainWindow):
             self.rebuild()
 
     def change_tile_tab(self, tile: Tile, new_tab: str) -> None:
+        if not Main._mutations_enabled(self):
+            return
         previous = _runtime_change_snapshot(self.cfg)
         restore_tab = self.current_tab()
         tile.tab = new_tab
@@ -3224,6 +3550,8 @@ class Main(QMainWindow):
         self._set_current_tab_by_name(new_tab)
 
     def add_tab(self) -> None:
+        if not Main._mutations_enabled(self):
+            return
         name, ok = QInputDialog.getText(self, "Add Tab", "Tab name:")
         if not ok or not name.strip():
             return
@@ -3235,11 +3563,30 @@ class Main(QMainWindow):
             return
         previous = _runtime_change_snapshot(self.cfg)
         restore_tab = self.current_tab()
-        state = add_tab_to_order(
-            _tab_order_state(self.cfg),
-            name,
-            blocked_ids=(self.cfg.workspace_id,),
-        )
+        try:
+            state = add_tab_to_order(
+                _tab_order_state(self.cfg),
+                name,
+                blocked_ids=(
+                    reserved_entity_ids(self.cfg._v2_document)
+                    if self.cfg._v2_document is not None
+                    else (self.cfg.workspace_id,)
+                ),
+            )
+        except TabIdentityAllocationError:
+            record_breadcrumb(
+                "config_change_save_failed",
+                failure_count=1,
+                failure_category="validation_failure",
+                operation="tab_add",
+            )
+            parent = self if isinstance(self, QWidget) else None
+            QMessageBox.critical(
+                parent,
+                "DesktopTileLauncher",
+                "The change could not be saved. No changes were applied.",
+            )
+            return
         _apply_tab_order_state(self.cfg, state)
         if not Main._save_runtime_change(
             self,
@@ -3252,6 +3599,8 @@ class Main(QMainWindow):
         self._set_current_tab_by_name(name)
 
     def rename_tab(self) -> None:
+        if not Main._mutations_enabled(self):
+            return
         current = self.current_tab()
         name, ok = QInputDialog.getText(self, "Rename Tab", "Tab name:", text=current)
         if not ok or not name.strip():
@@ -3284,6 +3633,8 @@ class Main(QMainWindow):
         self._set_current_tab_by_name(name)
 
     def delete_tab(self) -> None:
+        if not Main._mutations_enabled(self):
+            return
         current = self.current_tab()
         if len(self.cfg.tabs) == 1:
             QMessageBox.warning(self, "Not allowed", "At least one tab must exist.")
@@ -3315,6 +3666,8 @@ class Main(QMainWindow):
         self.rebuild()
 
     def toggle_current_tab_visibility(self) -> None:
+        if not Main._mutations_enabled(self):
+            return
         name = self.current_tab()
         hidden = name in self.cfg.hidden_tabs
         if not hidden and len(self._visible_tabs()) == 1:
@@ -3348,6 +3701,8 @@ class Main(QMainWindow):
         )
 
     def manage_tab_visibility(self) -> None:
+        if not Main._mutations_enabled(self):
+            return
         dlg = TabVisibilityDialog(self.cfg.tabs, self.cfg.hidden_tabs, self)
         while True:
             if dlg.exec() != QDialog.DialogCode.Accepted:

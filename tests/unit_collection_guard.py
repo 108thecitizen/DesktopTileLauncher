@@ -36,6 +36,7 @@ QT_FREE_UNIT_TEST_PATHS = frozenset(
         "tests/unit/test_config_migration_v2.py",
         "tests/unit/test_config_persistence.py",
         "tests/unit/test_config_recovery.py",
+        "tests/unit/test_config_runtime_state_v2.py",
         "tests/unit/test_config_runtime_v2.py",
         "tests/unit/test_config_schema.py",
         "tests/unit/test_config_schema_v2.py",

@@ -5,26 +5,31 @@
 ### App Behavior
 - Detect unreadable or corrupt configuration at startup and offer a safe default Exit or an
   explicit preserve-and-reset flow before the launcher mutates configuration state.
-- Add a Qt-free, schema-versioned migration harness and activate its pure deterministic
-  v0-to-v1 step for the Workspace/Tab identity schema.
-- Add a dormant, deterministic, Qt-free schema-v1-to-v2 transformer that constructs and
-  checks the complete URL Resource/Placement/DeviceBinding graph while keeping schema v2
-  unregistered and unreachable from production startup and persistence.
-- Add dormant, Qt-free schema-v2 runtime adapters that preserve existing URL presentation,
-  launch, window, tab-order, and metadata-refresh behavior without activating schema v2.
+- Add a Qt-free, schema-versioned migration harness and register its pure deterministic
+  v0-to-v1 and v1-to-v2 steps through the existing guarded migration transaction.
+- Activate schema version 2 as the current production format after constructing and checking
+  the complete URL Resource/Placement/DeviceBinding graph.
+- Activate Qt-free schema-v2 runtime adapters that preserve existing URL presentation,
+  launch, window, tab-order, and metadata-refresh behavior while retaining the complete graph.
+- Define lossless flat-UI mutation defaults: Add, Duplicate, and Import create `in_use`
+  Placements with explicit Display and Kanban insertion positions; cross-Tab moves preserve
+  the current flat Display position and append to the matching destination Kanban queue; Tab
+  deletion discards each owned Placement before removing the empty Tab. Shared, overridden,
+  or otherwise advanced graph state remains read-only where flat controls cannot represent it.
 - Make the unit-test gate fail closed before collection, block Qt-coupled imports, and fail
   instead of silently succeeding when pytest is unavailable.
 - Persist one `Default Workspace`, stable Workspace and Tab identities, ID-based Tile
   membership, and an independent `application.title` while retaining flat Tile behavior and
   existing launcher settings.
-- Construct missing and reset configuration as native version 1, load valid current version 1
-  without a startup write, and reject invalid identity graphs rather than repairing or
-  regenerating IDs.
+- Construct missing and reset configuration as complete version 2, load valid current version 2
+  without a startup write, and reject invalid graphs rather than repairing or regenerating IDs.
+- Publish first-run configuration only while the destination remains absent, preserving a
+  concurrently created configuration instead of overwriting it.
 - Give malformed, explicit-zero, unsupported, and migration-failure outcomes distinct fixed
   Exit-only handling without changing the existing corrupt-configuration Exit / Preserve and
   Reset flow.
-- Guard the normal implicit-v0 normalization save with the successfully classified source
-  snapshot so a concurrent replacement is not overwritten by stale legacy state.
+- Keep the compatibility-only implicit-legacy normalization save guarded by the successfully
+  classified source snapshot so a concurrent replacement is not overwritten by stale state.
 - Add active-tab tile selection with a selected count, Select all, Clear selection, and Done
   controls while preventing tile launches, context-menu changes, and dragging during selection.
 - Refresh selected tile names and icons only after overwrite confirmation; title and favicon
@@ -54,9 +59,8 @@
 - Clarify ADR-0001 so schema version 1 is the Q5 identity-only Workspace/Tab format and the
   unchanged full Resource/Placement/DeviceBinding graph is schema version 2; the Windows
   Content Triage “v1” product milestone name remains unchanged.
-- Document the deterministic schema-v1-to-v2 URL-Tile migration and complete schema-v2
-  contract; this documentation-only change does not alter runtime behavior, activate schema v2,
-  or change persisted state.
+- Document the deterministic schema-v1-to-v2 URL-Tile migration, complete schema-v2 contract,
+  and the bounded flat-UI activation policy that preserves unexposed graph state.
 
 ## v0.3.5 - 2026-06-17
 

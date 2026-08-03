@@ -18,6 +18,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Final, Generic, Protocol, TypeAlias, TypeVar, cast
 
+import config_migration_v2 as migration_v2
+import config_schema_v2 as schema_v2
 from config_persistence import atomic_write_bytes, atomic_write_text
 from config_recovery import (
     MAX_CONFIG_BYTES,
@@ -1626,7 +1628,7 @@ class ConfigurationMigrationError(Exception):
 
     @classmethod
     def unexpected_success(cls) -> ConfigurationMigrationError:
-        """Fail safely if the dormant registry returns an unsupported app result."""
+        """Fail safely if the production registry returns an unsupported app result."""
 
         return cls(
             StartupNoticeCategory.MIGRATION_FAILED,
@@ -1679,13 +1681,38 @@ def _validate_production_v1(
     return ValidationAccepted() if validate_v1(document) else ValidationRejected()
 
 
+def _migrate_production_v1_to_v2(
+    document: Mapping[str, JsonValue],
+) -> StepDecision:
+    candidate = migration_v2.migrate_v1_to_v2(document)
+    return (
+        StepApplied(cast(Mapping[str, JsonValue], candidate))
+        if candidate is not None
+        else StepRejected()
+    )
+
+
+def _validate_production_v2(
+    document: Mapping[str, JsonValue],
+) -> ValidationDecision:
+    return (
+        ValidationAccepted()
+        if schema_v2.validate_v2(document)
+        else ValidationRejected()
+    )
+
+
 PRODUCTION_REGISTRY_SPEC: Final = RegistrySpec(
     0,
-    1,
-    (MigrationStep(0, 1, "legacy_to_v1", _migrate_production_v0_to_v1),),
+    2,
+    (
+        MigrationStep(0, 1, "legacy_to_v1", _migrate_production_v0_to_v1),
+        MigrationStep(1, 2, "v1_to_v2", _migrate_production_v1_to_v2),
+    ),
     (
         VersionValidator(0, _validate_production_v0),
         VersionValidator(1, _validate_production_v1),
+        VersionValidator(2, _validate_production_v2),
     ),
 )
 _production_registry_result = validate_registry(PRODUCTION_REGISTRY_SPEC)

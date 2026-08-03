@@ -7,6 +7,7 @@ from collections.abc import Callable
 import pytest
 
 from tab_order import (
+    TabIdentityAllocationError,
     TabOrderState,
     add_tab,
     delete_tab,
@@ -22,6 +23,7 @@ D_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 H_ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 OBSOLETE_ID = "11111111-1111-4111-8111-111111111111"
 UNKNOWN_ID = "22222222-2222-4222-8222-222222222222"
+V5_ID = "ffffffff-ffff-5fff-8fff-ffffffffffff"
 
 
 def _id_factory(values: list[str]) -> Callable[[], str]:
@@ -143,6 +145,41 @@ def test_add_appends_unique_identifier_after_factory_collision() -> None:
     assert added.tabs == ["A", "B"]
     assert added.tab_ids == {"A": A_ID, "B": B_ID}
     assert added.tab_order == [A_ID, B_ID]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("candidate", ["not-a-uuid", A_ID, V5_ID])
+def test_add_bounds_invalid_colliding_or_non_uuid4_allocation(candidate: str) -> None:
+    state = TabOrderState(["A"], {"A": A_ID}, [A_ID])
+    calls = 0
+
+    def allocate() -> str:
+        nonlocal calls
+        calls += 1
+        return candidate
+
+    with pytest.raises(TabIdentityAllocationError) as exc_info:
+        add_tab(state, "B", allocate)
+
+    assert calls == 32  # nosec B101
+    assert exc_info.value.args == ("identity_allocation_failure",)  # nosec B101
+    assert exc_info.value.__cause__ is None  # nosec B101
+    assert exc_info.value.__context__ is None  # nosec B101
+
+
+@pytest.mark.unit
+def test_add_rejects_factory_exception_without_leaking_context() -> None:
+    state = TabOrderState(["A"], {"A": A_ID}, [A_ID])
+
+    def fail() -> str:
+        raise RuntimeError("sensitive allocator detail")
+
+    with pytest.raises(TabIdentityAllocationError) as exc_info:
+        add_tab(state, "B", fail)
+
+    assert exc_info.value.args == ("identity_allocation_failure",)  # nosec B101
+    assert exc_info.value.__cause__ is None  # nosec B101
+    assert exc_info.value.__context__ is None  # nosec B101
 
 
 @pytest.mark.unit
