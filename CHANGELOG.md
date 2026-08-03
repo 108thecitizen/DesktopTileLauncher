@@ -10,6 +10,10 @@
 - Add a dormant, deterministic, Qt-free schema-v1-to-v2 transformer that constructs and
   checks the complete URL Resource/Placement/DeviceBinding graph while keeping schema v2
   unregistered and unreachable from production startup and persistence.
+- Add dormant, Qt-free schema-v2 runtime adapters that preserve existing URL presentation,
+  launch, window, tab-order, and metadata-refresh behavior without activating schema v2.
+- Make the unit-test gate fail closed before collection, block Qt-coupled imports, and fail
+  instead of silently succeeding when pytest is unavailable.
 - Persist one `Default Workspace`, stable Workspace and Tab identities, ID-based Tile
   membership, and an independent `application.title` while retaining flat Tile behavior and
   existing launcher settings.
