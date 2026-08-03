@@ -12,13 +12,24 @@ Pytest bootstrap for headless/CI runs.
   * Optional marker 'requires_opengl' you can use to skip GL-only tests when libGL isn't available
 """
 
+from __future__ import annotations
+
 import ctypes
 import os
 import pathlib
 import sys
 import tempfile
+from typing import Protocol
 
-import pytest  # noqa: F401  # imported for pytest hooks below
+import pytest
+
+from unit_collection_guard import (
+    ForbiddenUnitImportFinder,
+    forbidden_loaded_modules,
+    is_unit_only_expression,
+    repo_relative_path,
+    should_ignore_test_module,
+)
 
 # ---------- Test-only path sandbox ----------
 # Keep application config, logs, caches, and temp files out of the real user profile.
@@ -78,6 +89,42 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 
+_UNIT_IMPORT_FINDER: ForbiddenUnitImportFinder | None = None
+_UNIT_IGNORED_PATHS: set[str] = set()
+_UNIT_SELECTED_COUNT = 0
+_UNIT_DESELECTED_COUNT = 0
+
+
+class _TerminalReporter(Protocol):
+    stats: dict[str, list[object]]
+
+    def write_line(self, line: str) -> None: ...
+
+
+def _marker_expression(config: pytest.Config) -> str:
+    expression = config.getoption("markexpr")
+    return expression if isinstance(expression, str) else ""
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_ignore_collect(
+    collection_path: pathlib.Path,
+    config: pytest.Config,
+) -> bool | None:
+    """Exclude unsafe or unclassified tests before Python imports them."""
+
+    ignored = should_ignore_test_module(
+        collection_path,
+        ROOT_PATH,
+        _marker_expression(config),
+    )
+    if ignored:
+        relative = repo_relative_path(collection_path, ROOT_PATH)
+        if relative is not None:
+            _UNIT_IGNORED_PATHS.add(relative)
+    return ignored
+
+
 # ---------- Optional: mark and skip GL-only tests in headless CI ----------
 def _has_libgl() -> bool:
     """Detect presence of the OpenGL runtime."""
@@ -88,15 +135,86 @@ def _has_libgl() -> bool:
         return False
 
 
-def pytest_configure(config):
+def pytest_configure(config: pytest.Config) -> None:
     # Register a marker so pytest doesn't warn about it if/when you use it.
     config.addinivalue_line(
         "markers",
         "requires_opengl: test depends on an OpenGL runtime (libGL); skip in headless CI",
     )
 
+    if not is_unit_only_expression(_marker_expression(config)):
+        return
+    loaded = forbidden_loaded_modules()
+    if loaded:
+        joined = ", ".join(loaded)
+        raise pytest.UsageError(
+            f"forbidden modules loaded before Qt-free unit collection: {joined}"
+        )
 
-def pytest_runtest_setup(item):
+    global _UNIT_IMPORT_FINDER
+    _UNIT_IMPORT_FINDER = ForbiddenUnitImportFinder()
+    sys.meta_path.insert(0, _UNIT_IMPORT_FINDER)
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
     # Only skip tests you explicitly mark; nothing else is affected.
     if "requires_opengl" in item.keywords and not _has_libgl():
         pytest.skip("OpenGL runtime (libGL.so.1) not present in this environment")
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    """Record the final item count after marker and keyword filtering."""
+
+    if not is_unit_only_expression(_marker_expression(config)):
+        return
+    global _UNIT_SELECTED_COUNT
+    _UNIT_SELECTED_COUNT = len(items)
+
+
+def pytest_deselected(items: list[pytest.Item]) -> None:
+    """Record marker/keyword deselections for explicit unit-gate evidence."""
+
+    global _UNIT_DESELECTED_COUNT
+    _UNIT_DESELECTED_COUNT += len(items)
+
+
+def pytest_terminal_summary(
+    terminalreporter: _TerminalReporter,
+    exitstatus: int,
+    config: pytest.Config,
+) -> None:
+    """Report pre-collection exclusions in the required unit-gate evidence."""
+
+    del exitstatus
+    if not is_unit_only_expression(_marker_expression(config)):
+        return
+    terminalreporter.write_line(
+        "unit collection safety: "
+        f"{len(_UNIT_IGNORED_PATHS)} non-allowlisted test modules excluded before import; "
+        "forbidden imports blocked"
+    )
+    terminalreporter.write_line(
+        "unit marker/keyword selection: "
+        f"{_UNIT_SELECTED_COUNT} selected, {_UNIT_DESELECTED_COUNT} deselected"
+    )
+    terminalreporter.write_line(
+        "unit test outcomes: "
+        f"{len(terminalreporter.stats.get('passed', []))} passed, "
+        f"{len(terminalreporter.stats.get('failed', []))} failed, "
+        f"{len(terminalreporter.stats.get('skipped', []))} skipped, "
+        f"{len(terminalreporter.stats.get('error', []))} errors"
+    )
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Remove the unit-only import guard after the pytest session."""
+
+    del config
+    global _UNIT_IMPORT_FINDER
+    if _UNIT_IMPORT_FINDER in sys.meta_path:
+        sys.meta_path.remove(_UNIT_IMPORT_FINDER)
+    _UNIT_IMPORT_FINDER = None

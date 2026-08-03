@@ -21,12 +21,14 @@ SCHEMA_PATH = REPO_ROOT / "config_schema_v2.py"
 SERIALIZATION_PATH = REPO_ROOT / "config_serialization_v2.py"
 MIGRATION_V2_PATH = REPO_ROOT / "config_migration_v2.py"
 TRANSFORM_V1_TO_V2_PATH = REPO_ROOT / "config_transform_v1_to_v2.py"
+RUNTIME_V2_PATH = REPO_ROOT / "config_runtime_v2.py"
 PERSISTENCE_PATH = REPO_ROOT / "config_persistence.py"
 PACKAGING_SPEC_PATH = REPO_ROOT / "DesktopTileLauncher.spec"
 PRODUCTION_ENTRY_PATH = REPO_ROOT / "tile_launcher.py"
 FORBIDDEN_V2_MODULES = frozenset(
     {
         "config_migration_v2.py",
+        "config_runtime_v2.py",
         "config_schema_v2.py",
         "config_serialization_v2.py",
         "config_transform_v1_to_v2.py",
@@ -104,6 +106,29 @@ TRANSFORM_V1_TO_V2_PUBLIC_TYPE_ALIASES = frozenset({"V1ToV2TransformResult"})
 TRANSFORM_V1_TO_V2_PUBLIC_NAMES = (
     TRANSFORM_V1_TO_V2_PUBLIC_FUNCTIONS | TRANSFORM_V1_TO_V2_PUBLIC_TYPE_ALIASES
 )
+RUNTIME_V2_PUBLIC_FUNCTIONS = frozenset({"apply_metadata_refresh", "project_workspace"})
+RUNTIME_V2_PUBLIC_DATACLASSES = frozenset(
+    {
+        "LaunchSettingsProjection",
+        "PlacementProjection",
+        "RuntimeAdapterRejected",
+        "TabProjection",
+        "WindowSettingsProjection",
+        "WorkspaceProjection",
+    }
+)
+RUNTIME_V2_PUBLIC_TYPE_ALIASES = frozenset(
+    {
+        "MetadataRefreshResult",
+        "RuntimeAdapterFailureCategory",
+        "WorkspaceProjectionResult",
+    }
+)
+RUNTIME_V2_PUBLIC_NAMES = (
+    RUNTIME_V2_PUBLIC_FUNCTIONS
+    | RUNTIME_V2_PUBLIC_DATACLASSES
+    | RUNTIME_V2_PUBLIC_TYPE_ALIASES
+)
 
 EXPECTED_SCHEMA_IMPORTS = frozenset(
     {
@@ -158,6 +183,17 @@ EXPECTED_TRANSFORM_V1_TO_V2_IMPORTS = frozenset(
         "import config_schema as v1",
         "import config_schema_v2 as v2",
         "import config_serialization_v2 as serialization",
+    }
+)
+EXPECTED_RUNTIME_V2_IMPORTS = frozenset(
+    {
+        "from __future__ import annotations",
+        "from dataclasses import dataclass",
+        "from dataclasses import field",
+        "from typing import Literal",
+        "from typing import TypeAlias",
+        "from typing import cast",
+        "import config_schema_v2 as v2",
     }
 )
 
@@ -629,6 +665,7 @@ def test_public_structural_result_and_behavioral_surfaces_are_exact() -> None:
     serialization_tree = _parse_path(SERIALIZATION_PATH)
     migration_v2_tree = _parse_path(MIGRATION_V2_PATH)
     transform_v1_to_v2_tree = _parse_path(TRANSFORM_V1_TO_V2_PATH)
+    runtime_v2_tree = _parse_path(RUNTIME_V2_PATH)
 
     assert _public_functions(schema_tree) == SCHEMA_PUBLIC_FUNCTIONS  # nosec B101
     assert {  # nosec B101
@@ -731,17 +768,38 @@ def test_public_structural_result_and_behavioral_surfaces_are_exact() -> None:
         _module_all(transform_v1_to_v2_tree) == TRANSFORM_V1_TO_V2_PUBLIC_NAMES
     )
 
+    assert _public_functions(runtime_v2_tree) == RUNTIME_V2_PUBLIC_FUNCTIONS  # nosec B101
+    assert {  # nosec B101
+        node.name
+        for node in runtime_v2_tree.body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    } == RUNTIME_V2_PUBLIC_DATACLASSES
+    assert (  # nosec B101
+        _public_classes(runtime_v2_tree, "dataclass") == RUNTIME_V2_PUBLIC_DATACLASSES
+    )
+    assert _public_classes(runtime_v2_tree, "typed_dict") == set()  # nosec B101
+    assert _public_classes(runtime_v2_tree, "enum") == set()  # nosec B101
+    assert _public_classes(runtime_v2_tree, "exception") == set()  # nosec B101
+    assert (  # nosec B101
+        _public_annotated_names(runtime_v2_tree, "type_alias")
+        == RUNTIME_V2_PUBLIC_TYPE_ALIASES
+    )
+    assert _public_annotated_names(runtime_v2_tree, "constant") == set()  # nosec B101
+    assert _module_all(runtime_v2_tree) == RUNTIME_V2_PUBLIC_NAMES  # nosec B101
+
 
 def test_exact_imports_and_focused_json_ast_contracts() -> None:
     schema_tree = _parse_path(SCHEMA_PATH)
     serialization_tree = _parse_path(SERIALIZATION_PATH)
     migration_v2_tree = _parse_path(MIGRATION_V2_PATH)
     transform_v1_to_v2_tree = _parse_path(TRANSFORM_V1_TO_V2_PATH)
+    runtime_v2_tree = _parse_path(RUNTIME_V2_PATH)
 
     schema_imports = _import_declarations(schema_tree)
     serialization_imports = _import_declarations(serialization_tree)
     migration_v2_imports = _import_declarations(migration_v2_tree)
     transform_v1_to_v2_imports = _import_declarations(transform_v1_to_v2_tree)
+    runtime_v2_imports = _import_declarations(runtime_v2_tree)
     assert len(schema_imports) == len(EXPECTED_SCHEMA_IMPORTS)  # nosec B101
     assert set(schema_imports) == EXPECTED_SCHEMA_IMPORTS  # nosec B101
     assert len(serialization_imports) == len(  # nosec B101
@@ -758,6 +816,8 @@ def test_exact_imports_and_focused_json_ast_contracts() -> None:
     assert (  # nosec B101
         set(transform_v1_to_v2_imports) == EXPECTED_TRANSFORM_V1_TO_V2_IMPORTS
     )
+    assert len(runtime_v2_imports) == len(EXPECTED_RUNTIME_V2_IMPORTS)  # nosec B101
+    assert set(runtime_v2_imports) == EXPECTED_RUNTIME_V2_IMPORTS  # nosec B101
 
     # These assertions describe direct JSON-related syntax, not general capabilities.
     assert not any(  # nosec B101
@@ -812,6 +872,7 @@ def test_transformer_dependency_closure_is_qt_free_and_not_runtime_rooted() -> N
         Path("config_schema_v2.py"),
     }.issubset(relative)
     assert Path("config_migration.py") not in relative  # nosec B101
+    assert Path("config_runtime_v2.py") not in relative  # nosec B101
     assert Path("tile_launcher.py") not in relative  # nosec B101
     for path in dependency_closure:
         import_roots = {
@@ -833,7 +894,26 @@ def test_checked_transform_dependency_closure_is_qt_free_and_excludes_startup() 
         Path("config_serialization_v2.py"),
         Path("config_transform_v1_to_v2.py"),
     }.issubset(relative)
+    assert Path("config_runtime_v2.py") not in relative  # nosec B101
     assert Path("tile_launcher.py") not in relative  # nosec B101
+    for path in dependency_closure:
+        import_roots = {
+            name.split(".", maxsplit=1)[0] for name in _raw_import_names(path)
+        }
+        assert import_roots.isdisjoint(QT_IMPORT_ROOTS), path  # nosec B101
+
+
+def test_runtime_adapter_dependency_closure_is_qt_free_and_detached() -> None:
+    dependency_closure = _repository_local_import_closure(
+        REPO_ROOT,
+        {RUNTIME_V2_PATH},
+    )
+    relative = _relative_paths(REPO_ROOT, dependency_closure)
+
+    assert relative == {  # nosec B101
+        Path("config_runtime_v2.py"),
+        Path("config_schema_v2.py"),
+    }
     for path in dependency_closure:
         import_roots = {
             name.split(".", maxsplit=1)[0] for name in _raw_import_names(path)

@@ -86,20 +86,17 @@ test: install-dev ## Run the full test suite (default)
 	  echo "[test] Offline detected: skipping full test suite"; \
 	fi
 
-# Exact unit-only filter you used successfully:
+# Exact fail-closed unit-only filter:
+.PHONY: test_unit
 test_unit: install-dev ensure-test-deps ## Run unit tests only (exclude slow/integration/e2e/etc.)
 	@set -euo pipefail; \
 	if $(PY) -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('pytest') else 1)" >/dev/null 2>&1; then \
 	  echo "[test_unit] running pytest (unit filter)"; \
-	  $(PY) -m pytest -q \
+	  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(PY) -m pytest -q tests \
 	    -m 'unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)' \
 	    -k 'not multi_window and not tray and not lazy_refresh'; \
 	else \
-	  if [ "$(ONLINE)" = "0" ]; then \
-	    echo "[test_unit] offline/proxy and pytest unavailable → skipping unit tests (exit 0)"; \
-	    exit 0; \
-	  fi; \
-	  echo "[test_unit] pytest missing but network available → aborting"; \
+	  echo "[test_unit] pytest unavailable after dependency setup → aborting"; \
 	  exit 1; \
 	fi
 
@@ -125,4 +122,3 @@ reassemble_wheels:
 # One-liner that mirrors the Codex task: reassemble + force offline install + run tests
 test_unit_offline: reassemble_wheels
 	@PIP_NO_INDEX=1 PIP_FIND_LINKS="vendor/wheelhouse-linux" $(MAKE) ONLINE=1 test_unit
-

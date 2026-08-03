@@ -32,7 +32,7 @@ ruff check tests
 mypy .
 
 # Unit tests only (see §2)
-pytest -q -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
+make test_unit
 ```
 
 These gates intentionally duplicate Ruff linting over the whole repo and over `tests/` to guarantee `tests/**/*.py` are included, independent of configuration.
@@ -52,12 +52,21 @@ make test_unit
 
 which must resolve to:
 ```bash
-pytest -q   -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)"   -k "not multi_window and not tray and not lazy_refresh"
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q tests   -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)"   -k "not multi_window and not tray and not lazy_refresh"
 ```
 
 - Never invoke `pytest` without the selector above.  
 - Never run targeted GUI/Qt/libGL tests by name.  
 - If you add tests, place unit tests in `tests/unit/` and mark them `@pytest.mark.unit`.  
+- Classify every pytest-discoverable `test_*.py` and `*_test.py` under `tests/` exactly once
+  in `tests/unit_collection_guard.py`: genuinely Qt-free modules belong in
+  `QT_FREE_UNIT_TEST_PATHS`; all others belong in `QUARANTINED_TEST_PATHS`. Unclassified
+  tests are excluded before import and fail the boundary regression instead of being collected.
+- Keep `make test_unit` scoped explicitly to `tests/` so the nested collection guard is active
+  for every path pytest can collect during the unit gate.
+- Do not weaken the pre-collection allowlist, forbidden-import finder, or
+  `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; marker deselection alone happens after imports and is
+  not a safe Qt boundary.
 - If you must edit non‑unit tests (e.g., under `tests/integration/`), **do not** execute them; rely on CI/humans.
 - Static edits to Qt/PySide6 tests are allowed only when they can be reviewed from source without importing or executing Qt; any needed Qt/GUI validation must be reported as **NOT RUN** and assigned to CI/humans.
 
@@ -135,7 +144,7 @@ If the files below already exist, update them; if not, add them at the repo root
 **`pytest.ini` — explicit markers & hermetic defaults**
 ```ini
 [pytest]
-addopts = -q
+addopts = -q --basetemp=.pytest_cache/test-runtime/pytest-tmp
 markers =
     unit: fast, hermetic tests with no external deps or GUI/Qt/GL
     integration: may touch DBs, services, or the OS
@@ -153,35 +162,18 @@ markers =
     flaky: nondeterministic
 ```
 
-**`conftest.py` — proactively skip GUI/Qt/GL when not available**
-```python
-import importlib.util
-import os
-import pytest
+**`tests/conftest.py` and `tests/unit_collection_guard.py` — fail-closed unit collection**
 
-def _has_qt() -> bool:
-    return importlib.util.find_spec("PySide6") is not None
-
-def _headless() -> bool:
-    # No display detected (common in agent environments)
-    return os.environ.get("DISPLAY") in (None, "",) and os.environ.get("WAYLAND_DISPLAY") in (None, "",)
-
-def pytest_collection_modifyitems(config, items):
-    skip_reasons = []
-    if not _has_qt():
-        skip_qt = pytest.mark.skip(reason="PySide6/Qt not available in agent environment")
-        for it in items:
-            if any(m.name in {"qt", "gui"} for m in it.iter_markers()):
-                it.add_marker(skip_qt)
-        skip_reasons.append("qt/gui")
-    if _headless():
-        skip_headless = pytest.mark.skip(reason="Headless environment; GUI/GL tests disabled")
-        for it in items:
-            if any(m.name in {"gui", "gl", "x11", "wayland"} for m in it.iter_markers()):
-                it.add_marker(skip_headless)
-        skip_reasons.append("gui/gl")
-    config.hook.pytest_deselected(items=[it for it in items if any(m.name in {"skip"} for m in it.own_markers)])
-```
+- Disable third-party pytest plugin autoload for `make test_unit`.
+- Under the exact unit marker expression, ignore every pytest-discoverable `test_*.py` and
+  `*_test.py` under `tests/` before import unless it appears in `QT_FREE_UNIT_TEST_PATHS`.
+- Scope `make test_unit` explicitly to `tests/`, where this collection guard is active.
+- Install the forbidden-import finder before collection so PySide6, Qt bindings, and
+  Qt-coupled launcher modules fail before loading.
+- Keep `tests/unit/test_unit_collection_boundary.py` in the safe allowlist. It verifies that
+  the safe and quarantined sets are disjoint, exhaustive, correctly marked, and Qt-free.
+- Return `None`, not `False`, for allowed or non-unit paths so full/GUI collection behavior is
+  unchanged.
 
 **`Makefile` — standardized local commands**
 ```make
@@ -205,7 +197,7 @@ types:
 	mypy .
 
 test_unit:
-	pytest -q -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q tests -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
 
 cov_unit:
 	pytest --cov=src --cov-report=term-missing -m "unit and not (integration or e2e or slow or network or gui or qt or gl or x11 or wayland or docker or gpu or perf or flaky)" -k "not multi_window and not tray and not lazy_refresh"
